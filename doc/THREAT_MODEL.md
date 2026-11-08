@@ -1,6 +1,6 @@
 # Agent OS threat model
 
-Status: Phase 2, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
+Status: Phase 3, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
 
 Check names in this document are rows in [`tests/isolation/checks.tsv`](../tests/isolation/checks.tsv). The [isolation design](ISOLATION.md) explains the controls.
 
@@ -75,6 +75,12 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Read project data as the system agent | T3 | A1, A2 | Project modes, and broker instances and their package scripts have no project data mounted | `tests/hostd/guest/privileges.sh`, `tests/hostd/guest/interrupt.sh` |
 | Hide a privileged change | T3 | A8 | Root-only log, synced before each privileged step | `tests/hostd/guest/packages.sh` |
 | Leave the host broken by interrupting a transaction | T3, power loss | A5, A9 | Durable `applying` record, repair before the next change | `tests/hostd/guest/interrupt.sh`, `tests/hostd/guest/after_power_loss.sh` |
+| Read or change managed snapshots | T1, T2 | A1, A7 | Mode `0700`, masked `/var/lib/agent-os`, read-only subvolumes | `snapshots_list`, `tests/storage/guest/snapshots.sh` |
+| Fill the disk past a project's limit | T1, T2 | A9 | One qgroup per project, and no capability to change it | `tests/storage/guest/layout.sh` |
+| Escape the limit with a new subvolume | T1, T2 | A9 | The storage check enrolls new subvolumes every minute | `tests/storage/guest/layout.sh` |
+| Forge `btrfs` output with a crafted subvolume name, to affect another project | T1, T2 | A9 | The kernel confirms each ID's path, and parsed output holds no project names | `tests/storage/guest/layout.sh` |
+| Survive a restore through a poisoned cache or a running process | T1, T2 | A1 | Restore kills the UID's processes and gives empty `cache` and `tmp` | `tests/storage/guest/restore.sh` |
+| Use a damaged or crafted backup to gain root or take over a UID | Holder of the backup store | A1, A4 | Checksum before parsing, strict header, `btrfs receive --chroot`, UID range and collision checks, and refusal of foreign owners, setuid files, and device nodes | `tests/storage/run` |
 
 ## Accepted gaps
 
@@ -86,13 +92,15 @@ Each gap stays open until a later change closes it. The suite marks the first on
 4. **The kernel is shared.** T6 defeats the design. Use the `vm` execution profile for workloads that warrant a separate kernel.
 5. **Same-project processes are not isolated from each other.** An agent can read every credential that its project holds. A secret delivered to a project is visible to all of that project's code.
 6. **Package installation scripts run as root.** T4 has full control during installation. Policy and approval reduce the chance of T4, and they do not contain it. A script can also add file capabilities, which the content scan cannot see.
-7. **A project can fill the shared Btrfs filesystem.** No quota exists until Phase 3. This stops every other project from writing.
-8. **A project can create its own Btrfs subvolumes.** They fall outside parent snapshots, so Phase 3 must decide how to handle them.
+7. **Projects can still fill the shared Btrfs filesystem together.** The default limit is 80% for each project, so several projects can exceed the disk. A project can also write outside its limit in the time before the storage check enrolls a new subvolume, at most one minute. Under critical pressure the check stops the largest project, which can be the wrong one. Snapshots are not counted against a project's limit.
+8. **A project can create its own Btrfs subvolumes.** systemd cannot filter `ioctl` arguments, so the sandbox cannot stop this. Snapshots omit their contents, and the snapshot reports how many it omitted. A project that creates shared subvolumes also forces quota rescans, and limits are not exact during a rescan.
 9. **Project output can contain terminal escape sequences.** `run`, `shell`, and `logs` pass the output to the administrator's terminal unfiltered.
 10. **Project output goes to the host journal.** journald's size limits apply, and the journal keeps secrets that a project prints. A project can also push out older host log entries.
 11. **The system agent can grow the audit log.** T3 can send refused requests until the data disk fills. Log rotation does not exist yet. Projects cannot reach this path.
 14. **A busy lock can delay the administrator.** T3 can keep requesting long plans, so an administrator's change can be refused as `busy`. Stopping `agentos-hostd.socket` ends this.
 12. **A human approves what `change show` displays.** The plan lists actions, units, and setuid files. It cannot judge whether a package is trustworthy.
+15. **Backups are not encrypted or signed.** A stream holds every project secret. The checksum catches damage, and someone who can rewrite the backup can also rewrite the checksum. The checks at `recover` limit what a forged backup can do, but the forged project data is still restored. Encrypt and authenticate the stream outside `agentos`.
+16. **`agentos` does not schedule or rotate backups.** The operator pulls them. A backup is always a full stream.
 13. **A leaked connection keeps its identity.** `SO_PEERCRED` describes who connected. If the system agent passes an open socket to another process, that process acts as the system agent.
 
 ## Rules for later phases

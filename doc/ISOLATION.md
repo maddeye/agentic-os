@@ -65,17 +65,17 @@ Projects have no IPv6 route. DNS uses the upstream servers in `/run/systemd/reso
 | `/var/lib/agent-os/system-agent` | `agentos-system` | `0700` | System agent home |
 | `/var/lib/agent-os/snapshots` | `root:root` | `0700` | Managed snapshots |
 | `/var/lib/agent-os/projects` | `root:root` | `0711` | Project parent, no listing for projects |
-| `projects/NAME` | `root:aos-NAME` | `0750` | Project root |
+| `projects/NAME` | `root:aos-NAME` | `0750` | Project root, a Btrfs subvolume |
 | `projects/NAME/workspace` | `aos-NAME` | `0700` | Repository checkout, default working directory |
 | `projects/NAME/home` | `aos-NAME` | `0700` | `HOME` and project-local tools |
-| `projects/NAME/cache` | `aos-NAME` | `0700` | `XDG_CACHE_HOME`, private package caches |
+| `projects/NAME/cache` | `aos-NAME` | `0700` | `XDG_CACHE_HOME`, private package caches, a nested subvolume |
 | `projects/NAME/state` | `aos-NAME` | `0700` | `XDG_STATE_HOME`, agent state and GUI sockets |
 | `projects/NAME/artifacts` | `aos-NAME` | `0700` | GUI captures and test output |
-| `projects/NAME/tmp` | `aos-NAME` | `0700` | Bound over `/tmp` and `/var/tmp` |
+| `projects/NAME/tmp` | `aos-NAME` | `0700` | Bound over `/tmp` and `/var/tmp`, a nested subvolume |
 
 Root owns `projects/NAME` so that a project cannot replace `workspace` with a symlink. `tmp` is an addition to the architecture layout. Commands in one project share `/tmp` through it, which a per-unit `PrivateTmp=` would prevent.
 
-The Btrfs subvolume hierarchy stays open until Phase 3. The measured behavior limits it: a snapshot of a parent subvolume omits files inside nested subvolumes ([baseline](BASELINE.md)). Making `cache` a nested subvolume would therefore keep it out of project snapshots.
+[STORAGE.md](STORAGE.md) describes subvolumes, snapshots, quotas, and backups.
 
 ## Sandbox settings
 
@@ -97,11 +97,3 @@ The Btrfs subvolume hierarchy stays open until Phase 3. The measured behavior li
 `MemoryDenyWriteExecute` stays off, because JIT runtimes such as Node.js need writable and executable memory (`jit_rwx_memory`). `RestrictNamespaces` stays off, because browser sandboxes need user namespaces (`user_namespace`).
 
 `/dev/shm` and SysV IPC are private per command. Two commands in one project cannot share them. Pi completes a full tool-call loop under this restriction. Other harnesses are untested.
-
-## Decisions still open
-
-These need a decision before the phase named.
-
-| Question | Recommendation | Needed by |
-|---|---|---|
-| Btrfs subvolume hierarchy, compression, and quotas | Benchmark in Phase 3. | Phase 3 |

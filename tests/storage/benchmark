@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Measures snapshot, restore, quota, and compression costs in a fresh VM.
+# doc/STORAGE.md records the results. Prints one table on standard output.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+"$repo/tests/vm/deploy" >&2
+"$repo/tests/vm/vm" ssh 'sudo /opt/aos-tests/tests/storage/guest/benchmark.sh'
+"$repo/tests/vm/vm" down

@@ -21,7 +21,15 @@ The command and service names are provisional.
 | `agentos project stop NAME [ID]` | Stops one command, or every command in the project. |
 | `agentos project toolchain NAME TOOL VERSION` | Puts an installed global toolchain on the project's `PATH`. |
 | `agentos project toolchain NAME TOOL --clear` | Removes that selection. |
-| `agentos project delete NAME --yes` | Stops all commands and removes all project data and the identity. |
+| `agentos project snapshot NAME [--label LABEL] [--auto]` | Takes a read-only snapshot and prints its ID. `--auto` makes it subject to retention. |
+| `agentos project snapshots NAME` | Prints ID, kind, creation time, omitted subvolume count, and label. |
+| `agentos project snapshot-delete NAME ID --yes` | Removes one snapshot. |
+| `agentos project prune NAME [--keep N]` | Removes the oldest automatic snapshots, beyond the newest `N`. |
+| `agentos project restore NAME --snapshot ID --yes` | Stops all commands, replaces the project's data, and prints the ID of the automatic pre-restore snapshot. |
+| `agentos project backup NAME --snapshot ID` | Writes a backup stream to standard output. |
+| `agentos project recover` | Recreates a project from a backup stream on standard input. Prints `NAME`. |
+| `agentos project delete NAME --yes` | Stops all commands and removes all project data, its local snapshots, and the identity. |
+| `agentos storage check` | Runs the storage check at once. `agentos-storage.timer` runs it every minute. |
 
 ## `create` flags
 
@@ -31,8 +39,9 @@ The command and service names are provisional.
 | `--memory-high SIZE` | `70%` | `MemoryHigh` for the whole project. |
 | `--memory-max SIZE` | `80%` | `MemoryMax` for the whole project. |
 | `--tasks N` | `4096` | `TasksMax` for the whole project. |
+| `--disk SIZE` | `80%` | Limit on all of the project's subvolumes together. A percentage means a share of the filesystem. |
 
-`SIZE` is a number with an optional `K`, `M`, `G`, or `T` suffix, or a percentage of RAM. All projects together are also limited by `agentos-project.slice`.
+`SIZE` is a number with an optional `K`, `M`, `G`, or `T` suffix, or a percentage. Memory percentages mean a share of RAM. All projects together are also limited by `agentos-project.slice`.
 
 `NAME` matches `^[a-z]([a-z0-9-]{0,26}[a-z0-9])?$`.
 
@@ -67,7 +76,7 @@ Replies are JSON on standard output. Refusals go to standard error.
 |---|---|
 | Status of `COMMAND` | `run` completed the command. |
 | 1 | The caller is not root. |
-| 2 | Invalid usage, unknown project, an existing project or account with that name, or a process that outlives `delete`. |
+| 2 | Invalid usage, unknown project or snapshot, an existing project or account with that name, a refused backup, too little free disk space for a snapshot, or a process that outlives `delete` or `restore`. |
 | 127 | `COMMAND` is not on the project's `PATH`. |
 
 ## Command lifetime
@@ -77,11 +86,14 @@ Replies are JSON on standard output. Refusals go to standard error.
 | SSH connection lost | Kept | Keeps running | Lifetime not guaranteed. Check `ps`. |
 | `stop` | Kept | Stopped | Stopped |
 | Host reboot | Kept | Not resumed | Not resumed |
+| `restore` | Replaced | Stopped | Stopped |
 | `delete` | Removed | Stopped | Stopped |
 
 Use `--detach` for any work that must survive a lost connection.
 
 If `delete` fails, run it again. The name stays reserved and the project accepts no commands until a `delete` completes.
+
+If `restore` fails, run it again with the same snapshot, or run `delete`. The project accepts no commands until one of them completes. If `recover` fails, run it again with the same backup.
 
 Commands in one project share a network namespace and reach each other on `127.0.0.1`. The administrator can reach a project port at the address that `inspect` prints.
 

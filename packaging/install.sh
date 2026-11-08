@@ -15,15 +15,20 @@ install -m 0755 "$repo/.build/bin/agentos-hostd" "$repo/.build/bin/agentos-hostc
 install -D -m 0644 "$repo/configs/toolchains/catalog.json" /usr/share/agent-os/toolchains.json
 # The administrator owns the policy after the first install.
 [ -e /etc/agent-os/hostd-policy.json ] || install -D -m 0644 "$repo/configs/policies/hostd-policy.json" /etc/agent-os/hostd-policy.json
+[ -e /etc/agent-os/storage.conf ] || install -D -m 0644 "$repo/configs/storage.conf" /etc/agent-os/storage.conf
 install -m 0644 "$repo/configs/systemd/agentos-project.slice" "$repo/configs/systemd/agentos-firewall.service" \
 	"$repo/configs/systemd/agentos-netns@.service" "$repo/configs/systemd/agentos-hostd.socket" \
 	"$repo/configs/systemd/agentos-hostd@.service" "$repo/configs/systemd/agentos-hostd-admin.socket" \
-	"$repo/configs/systemd/agentos-hostd-admin@.service" /etc/systemd/system/
+	"$repo/configs/systemd/agentos-hostd-admin@.service" "$repo/configs/systemd/agentos-storage.service" \
+	"$repo/configs/systemd/agentos-storage.timer" /etc/systemd/system/
 
 install -d -o root -g root -m 0711 /var/lib/agent-os /var/lib/agent-os/projects
+# Snapshots and quotas exist only on Btrfs. A second enable is harmless.
+[ "$(stat -f -c %T /var/lib/agent-os)" = btrfs ] || { echo "install: /var/lib/agent-os must be on Btrfs" >&2; exit 1; }
+btrfs quota enable /var/lib/agent-os
 install -d -o root -g root -m 0700 /var/lib/agent-os/metadata /var/lib/agent-os/metadata/projects /var/lib/agent-os/snapshots \
 	/var/lib/agent-os/metadata/hostd /var/lib/agent-os/metadata/hostd/changes
 install -d -o agentos-system -g agentos-system -m 0700 /var/lib/agent-os/system-agent
 install -d -o root -g root -m 0755 /opt/agent-os /opt/agent-os/toolchains
 systemctl daemon-reload
-systemctl enable --now agentos-firewall.service agentos-hostd.socket agentos-hostd-admin.socket
+systemctl enable --now agentos-firewall.service agentos-hostd.socket agentos-hostd-admin.socket agentos-storage.timer

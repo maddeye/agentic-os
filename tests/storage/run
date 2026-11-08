@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Runs the Phase 3 storage test in freshly reset VMs. The backup leaves the first
+# VM through standard output, and a VM reset then proves that nothing else survived.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+guest=/opt/aos-tests/tests/storage/guest
+out="$repo/.vm/results/storage-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$out"
+step() { # <script> [args...]
+	echo "### $1"
+	"$vm" ssh "sudo $guest/$1.sh ${*:2}"
+}
+expect_refused() { # <name> <backup file>
+	local status=0
+	"$vm" ssh 'sudo agentos project recover' < "$2" >/dev/null 2>"$out/refusal.log" || status=$?
+	if [[ "$status" != 2 ]]; then
+		echo "FAIL: $1: expected status 2, got $status" >&2
+		cat "$out/refusal.log" >&2
+		exit 1
+	fi
+	echo "ok: refused $1 ($(cat "$out/refusal.log"))"
+}
+
+"$repo/tests/vm/deploy"
+step layout
+step snapshots
+step restore
+step pressure
+step backup_source
+snapshot=$("$vm" ssh 'sudo cat /root/backup-snapshot')
+"$vm" ssh "sudo agentos project backup alpha --snapshot $snapshot" > "$out/alpha.backup"
+"$vm" ssh "sudo cat /root/crafted.backup" > "$out/crafted.backup"
+"$vm" ssh "sudo cat /root/crafted-uid.backup" > "$out/crafted-uid.backup"
+expect_refused "a recover over an existing project" "$out/alpha.backup"
+
+echo "### fresh VM"
+"$repo/tests/vm/deploy"
+head -c "$(( $(stat -c %s "$out/alpha.backup") / 2 ))" "$out/alpha.backup" > "$out/truncated.backup"
+cp "$out/alpha.backup" "$out/flipped.backup"
+printf 'X' | dd of="$out/flipped.backup" bs=1 seek=4096 conv=notrunc status=none
+expect_refused "a truncated backup" "$out/truncated.backup"
+expect_refused "a corrupted backup" "$out/flipped.backup"
+expect_refused "a backup with a setuid root file" "$out/crafted.backup"
+expect_refused "a backup claiming UID 0" "$out/crafted-uid.backup"
+step no_residue
+"$vm" ssh 'sudo agentos project recover' < "$out/alpha.backup"
+step recovered "$snapshot"
+"$vm" down
+echo "PASS: storage"

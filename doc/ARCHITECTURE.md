@@ -446,7 +446,7 @@ Reasons:
 - Native Linux kernel integration.
 - Send/receive for replication.
 
-The exact quota, compression, and retention strategy needs benchmarking.
+[STORAGE.md](STORAGE.md) records the quota and retention design and the benchmarks. Compression is still open.
 
 ### 6.2 Proposed Layout
 
@@ -957,15 +957,15 @@ Use typed checks or unprivileged execution whenever possible.
 
 ### Phase 3 — Btrfs Workspace Lifecycle
 
-- [ ] Implement project subvolume creation.
-- [ ] Implement project snapshots.
-- [ ] Implement snapshot listing and retention.
-- [ ] Implement safe restoration.
-- [ ] Validate nested subvolume handling.
-- [ ] Add disk-pressure safeguards.
-- [ ] Test recovery after destructive edits.
-- [ ] Implement an off-host backup prototype.
-- [ ] Restore from backup on a fresh VM.
+- [x] Implement project subvolume creation.
+- [x] Implement project snapshots.
+- [x] Implement snapshot listing and retention.
+- [x] Implement safe restoration.
+- [x] Validate nested subvolume handling.
+- [x] Add disk-pressure safeguards.
+- [x] Test recovery after destructive edits.
+- [x] Implement an off-host backup prototype.
+- [x] Restore from backup on a fresh VM.
 
 **Exit criterion:** a project can be restored from a local snapshot and independently recovered from external backup.
 
@@ -1071,12 +1071,8 @@ These decisions must be resolved through prototyping, investigation, or explicit
 
 ### Filesystem
 
-- Btrfs subvolume hierarchy.
-- Compression configuration.
-- Quota strategy.
-- Cache exclusions.
-- Snapshot retention.
-- Backup mechanism.
+- Compression configuration ([recommendation](STORAGE.md#open-decisions)).
+- Backup encryption, schedule, and incremental sends.
 - Host rollback implementation.
 
 ### Graphics
@@ -1120,6 +1116,10 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-08 | Each project gets a network namespace with `veth`, NAT, and an `nftables` policy | Supersedes the accepted loopback and abstract socket gaps. Egress policy remains future work. See `doc/ISOLATION.md`. |
 | 2026-11-08 | `hostd` is written in Rust and socket-activated per connection | A root service that parses requests needs typed input handling. systemd supplies supervision, and no process exists while idle. See `doc/HOSTD.md`. |
 | 2026-11-08 | Rust binaries build with Debian's compiler in a container pinned to the APT snapshot | Matches the target's glibc and adds no new toolchain source. |
+| 2026-11-08 | Each project is one Btrfs subvolume, with `cache` and `tmp` as nested subvolumes | One snapshot covers `workspace`, `home`, `state`, and `artifacts` atomically. Rebuildable data stays out. See [STORAGE.md](STORAGE.md). |
+| 2026-11-08 | Restore gives the project an empty `cache` | A compromised agent can poison a cache, and keeping it would carry the poison past the restore. |
+| 2026-11-08 | One level-1 qgroup per project, with a referenced limit | The limit covers all of a project's subvolumes, and snapshots do not count against it. Measured cost is negligible. |
+| 2026-11-08 | Backups are a stream on standard output, using `btrfs send` | The off-host side pulls them, so a compromised host cannot reach old backups. Adds no dependency. Encryption and incremental sends stay open. |
 | 2026-11-08 | The system agent is the `agentos-system` account, outside the `aos-` namespace | No project name can collide with it. |
 | 2026-11-08 | Nothing is automatic by default, and approval binds to one exact transaction | The administrator decides what runs unattended. Later package changes cannot widen an approval. |
 | 2026-11-08 | Global toolchains come only from a pinned catalog and publish with one rename | Removes arbitrary global binaries from the API. Projects never see a partial version. |

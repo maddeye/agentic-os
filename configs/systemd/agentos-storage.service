@@ -1,0 +1,6 @@
+[Unit]
+Description=Agent OS storage check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/agentos storage check
