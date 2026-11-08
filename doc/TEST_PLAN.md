@@ -97,6 +97,23 @@ The last line is `PASS: hostd`. The command needs internet access. It tests thes
 
 `packaging/build` runs the Rust unit tests and builds the binaries with Debian's compiler in a pinned container. Every VM deployment runs it, so a failing unit test stops the suites.
 
+## Run the storage suite
+
+```bash
+tests/storage/run
+```
+
+The last line is `PASS: storage`. It tests these behaviors:
+
+- Subvolume layout, per-project disk limits, and subvolumes that try to escape a limit or forge `btrfs` output.
+- Snapshot contents, listing, retention, snapshots of a busy project, and interrupted snapshots.
+- Recovery after a destructive edit, undoing a restore, and a restore that fails before and after the swap.
+- Refusing snapshots, pruning, and stopping the largest project under disk pressure.
+- The exit criterion: a backup leaves the VM through standard output, the VM resets, and `recover` rebuilds the project.
+- Refusal of truncated, corrupted, and crafted backups, with nothing left behind.
+
+`tests/storage/benchmark` prints the measurements that [STORAGE.md](STORAGE.md) records.
+
 ## Run the suites in GitHub Actions
 
 `.github/workflows/tests.yml` runs only when you start it, because each run uses about 17 minutes of the private repository's Actions allowance. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.
@@ -117,4 +134,4 @@ tests/vm/baseline
 
 The command writes `doc/BASELINE.md` from a capability probe and three fresh boots.
 
-The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, global package promotion timing, snapshot and restore latency, GUI startup and capture, behavior under pressure, and recovery timing.
+The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, global package promotion timing, GUI startup and capture, behavior under pressure, and recovery timing.

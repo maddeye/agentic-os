@@ -8,16 +8,22 @@ shopt -s inherit_errexit
 
 data=/var/lib/agent-os
 projects=$data/projects
+snapshots=$data/snapshots
 registry=$data/metadata/projects
 counter=$data/metadata/next-uid
 properties=/usr/share/agent-os/native-restricted.properties
 toolchains=/opt/agent-os/toolchains
 uid_first=20000
 uid_last=29999
+storage_conf=/etc/agent-os/storage.conf
+backup_magic=agentos-backup-1
+# A project's cache and tmp are subvolumes of their own, so snapshots leave them out.
+captured_children=(workspace home state artifacts)
+excluded_children=(cache tmp)
 
 usage() {
 	cat >&2 <<'USAGE'
-usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memory-max SIZE] [--tasks N]
+usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memory-max SIZE] [--tasks N] [--disk SIZE]
        agentos project list
        agentos project inspect NAME
        agentos project run [--detach] NAME -- COMMAND [ARG...]
@@ -26,7 +32,15 @@ usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memor
        agentos project ps NAME
        agentos project logs NAME ID
        agentos project stop NAME [ID]
+       agentos project snapshot NAME [--label LABEL] [--auto]
+       agentos project snapshots NAME
+       agentos project snapshot-delete NAME ID --yes
+       agentos project prune NAME [--keep N]
+       agentos project restore NAME --snapshot ID --yes
+       agentos project backup NAME --snapshot ID > FILE
+       agentos project recover < FILE
        agentos project delete NAME --yes
+       agentos storage check
        agentos system ...    (run 'agentos system' for its commands)
 USAGE
 	exit 2
@@ -45,6 +59,14 @@ check_toolchain() { # <tool> <version>
 
 check_id() {
 	[[ "$1" =~ ^[0-9a-f]{8}$ ]] || die "invalid command id: '$1'"
+}
+
+check_snapshot_id() {
+	[[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]{9}$ ]] || die "invalid snapshot id: '$1'"
+}
+
+check_label() {
+	[[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "invalid label: '$1'"
 }
 
 # The registry entry exists under NAME only while the project is usable.
@@ -78,25 +100,193 @@ next_uid() {
 	echo "$uid"
 }
 
+# Inode 256 is the root of a Btrfs subvolume.
+is_subvolume() { [[ -d "$1" && ! -L "$1" && "$(stat -c %i "$1")" == 256 ]]; }
+
+filesystem_bytes() { echo $(( $(stat -f -c '%b * %S' "$data") )); }
+
+free_percent() { echo $(( $(stat -f -c '%a * 100 / %b' "$data") )); }
+
+to_bytes() { # <size accepted by check_size>
+	if [[ "$1" == *% ]]; then
+		echo $(( $(filesystem_bytes) * ${1%\%} / 100 ))
+	else
+		numfmt --from=iec "$1"
+	fi
+}
+
+load_storage_conf() {
+	keep_automatic=10 reserve_percent=10 critical_percent=5
+	[[ -f "$storage_conf" ]] || return 0
+	local key value
+	while IFS='=' read -r key value; do
+		[[ -z "$key" || "$key" == \#* ]] && continue
+		case "$key" in
+			keep_automatic|reserve_percent|critical_percent) ;;
+			*) die "unknown setting in $storage_conf: $key" ;;
+		esac
+		[[ "$value" =~ ^[0-9]+$ ]] || die "invalid value in $storage_conf: $key"
+		printf -v "$key" '%s' "$value"
+	done < "$storage_conf"
+}
+
+# Removes a tree that can hold read-only subvolumes. It does not follow symlinks.
+remove_tree() { # <path>
+	[[ -e "$1" ]] || return 0
+	find "$1" -type d -inum 256 -exec btrfs property set -f {} ro false \; 2>/dev/null || true
+	rm -rf -- "$1"
+}
+
+# One qgroup per project holds all of its subvolumes, and the limit applies to their total.
+ensure_quota() { # <uid> <bytes>
+	btrfs qgroup create "1/$1" "$data" 2>/dev/null || true
+	btrfs qgroup limit "$2" "1/$1" "$data"
+}
+
+make_private_subvolume() { # <uid> <path>
+	is_subvolume "$2" || btrfs -q subvolume create -i "1/$1" "$2"
+	chown "$1:$1" "$2"
+	chmod 0700 "$2"
+}
+
+# Prints "ID kind" for every subvolume below the project. The kind is `excluded`
+# for cache and tmp and `nested` for any other. A project chooses subvolume names,
+# and a newline in one can forge a line of `list`, so the kernel confirms each ID.
+project_subvolumes() { # <name>
+	local top id path
+	top=$(btrfs subvolume show "$projects/$1" | sed -n 1p)
+	btrfs subvolume list "$data" | awk '$1 == "ID" && $2 ~ /^[0-9]+$/ { print $2 }' | while read -r id; do
+		path=$(btrfs inspect-internal subvolid-resolve "$id" "$data" 2>/dev/null) || continue
+		[[ "$path" == "$top"/* ]] || continue
+		path=${path#"$top"/}
+		case "$path" in
+			cache|cache/*|tmp|tmp/*) echo "$id excluded" ;;
+			*) echo "$id nested" ;;
+		esac
+	done
+}
+
+# A project can create subvolumes that start outside its qgroup. Enrolling one that
+# is already a member fails, so the outcome of each attempt does not matter.
+enroll_subvolumes() { # <name> <uid>
+	local id _
+	while read -r id _; do
+		btrfs qgroup assign "0/$id" "1/$2" "$data" 2>/dev/null || true
+	done < <(project_subvolumes "$1")
+}
+
+# The project's subvolume stays the snapshot boundary, so every captured child
+# changes atomically and the cache and tmp subvolumes stay out.
+make_snapshot() { # <name> <manual|auto> <label>
+	local name=$1 kind=$2 label=$3 id dir work omitted
+	id=$(date -u +%Y%m%dT%H%M%SZ-%N)
+	dir=$snapshots/$name
+	install -d -m 0700 "$dir"
+	work=$dir/.new-$id
+	mkdir "$work"
+	btrfs -q subvolume snapshot -r "$projects/$name" "$work/tree"
+	omitted=$(project_subvolumes "$name" | grep -c ' nested$' || true)
+	printf 'id=%s\nkind=%s\nlabel=%s\ncreated=%s\nomitted_subvolumes=%s\n' \
+		"$id" "$kind" "$label" "$(date -u +%FT%TZ)" "$omitted" > "$work/meta"
+	sync "$work/meta"
+	mv -T "$work" "$dir/$id"
+	(( omitted == 0 )) || echo "agentos: warning: snapshot $id omits $omitted subvolume(s) that the project created" >&2
+	echo "$id"
+}
+
+snapshot_field() { # <meta file> <key>
+	sed -n "s/^$2=//p" "$1"
+}
+
+snapshot_ids() { # <name>, oldest first
+	local entry
+	for entry in "$snapshots/$1"/*; do
+		[[ -f "$entry/meta" ]] && echo "${entry##*/}"
+	done
+	return 0
+}
+
+# Returns 1 while a backup is streaming the snapshot.
+remove_snapshot() { # <name> <id>
+	local dir=$snapshots/$1/$2 dead=$snapshots/$1/.dead-$2
+	exec 8<"$dir/meta"
+	flock -n 8 || { exec 8<&-; return 1; }
+	mv -T "$dir" "$dead"
+	exec 8<&-
+	remove_tree "$dead"
+}
+
+clean_interrupted() { # <name>
+	local entry
+	for entry in "$snapshots/$1"/.new-* "$snapshots/$1"/.dead-*; do
+		remove_tree "$entry"
+	done
+}
+
+prune_snapshots() { # <name> <keep>, automatic snapshots only
+	local ids index kept=0
+	clean_interrupted "$1"
+	mapfile -t ids < <(snapshot_ids "$1")
+	for (( index = ${#ids[@]} - 1; index >= 0; index-- )); do
+		[[ "$(snapshot_field "$snapshots/$1/${ids[index]}/meta" kind)" == auto ]] || continue
+		kept=$((kept + 1))
+		(( kept > $2 )) || continue
+		remove_snapshot "$1" "${ids[index]}" || echo "agentos: kept ${ids[index]}: a backup is reading it" >&2
+	done
+}
+
+# Builds a writable project tree from a snapshot, with empty cache and tmp.
+build_tree() { # <uid> <snapshot tree> <destination>
+	local child
+	btrfs -q subvolume snapshot -i "1/$1" "$2" "$3"
+	for child in "${excluded_children[@]}"; do
+		[[ ! -d "$3/$child" ]] || rmdir "$3/$child"
+		make_private_subvolume "$1" "$3/$child"
+	done
+	# A snapshot shares its data with the group's members, which the kernel cannot
+	# account without a scan. The scan runs in the background.
+	btrfs quota rescan "$data" >/dev/null 2>&1 || true
+}
+
+ensure_account() { # <name> <uid>
+	id -u "aos-$1" >/dev/null 2>&1 || useradd --uid "$2" --user-group --no-create-home \
+		--home-dir "$projects/$1/home" --shell /usr/sbin/nologin "aos-$1"
+	[[ "$(id -u "aos-$1")" == "$2" ]] || die "user aos-$1 does not match its recorded UID"
+}
+
+write_slice() { # <uid> <memory high> <memory max> <tasks> <cpu or empty>
+	{
+		echo "[Slice]"
+		echo "MemoryHigh=$2"
+		echo "MemoryMax=$3"
+		echo "MemorySwapMax=0"
+		echo "TasksMax=$4"
+		[[ -z "$5" ]] || echo "CPUQuota=$5%"
+	} > "$(slice_file "$1").tmp"
+	mv "$(slice_file "$1").tmp" "$(slice_file "$1")"
+	systemctl daemon-reload
+}
+
 cmd_create() {
-	local name="" cpu="" memory_high=70% memory_max=80% tasks=4096
+	local name="" cpu="" memory_high=70% memory_max=80% tasks=4096 disk=80%
 	while (( $# )); do
 		case "$1" in
 			--cpu) cpu=${2:-}; [[ "$cpu" =~ ^[1-9][0-9]*$ ]] || die "invalid --cpu"; shift 2 ;;
 			--memory-high) memory_high=${2:-}; check_size "$memory_high"; shift 2 ;;
 			--memory-max) memory_max=${2:-}; check_size "$memory_max"; shift 2 ;;
 			--tasks) tasks=${2:-}; [[ "$tasks" =~ ^[1-9][0-9]*$ ]] || die "invalid --tasks"; shift 2 ;;
+			--disk) disk=${2:-}; check_size "$disk"; shift 2 ;;
 			-*) usage ;;
 			*) [[ -z "$name" ]] || usage; name=$1; shift ;;
 		esac
 	done
 	check_name "$name"
 	take_lock
-	[[ ! -e "$registry/$name" && ! -e "$registry/$name.deleting" ]] || die "project already exists: $name"
+	project_absent "$name"
 
 	# NAME.creating records the UID before the account exists. Only a create that
 	# wrote this record may resume, so an unrelated aos-NAME account is never adopted.
-	local user=aos-$name root=$projects/$name intent=$registry/$name.creating uid child
+	local user=aos-$name root=$projects/$name intent=$registry/$name.creating uid child disk_bytes
 	if [[ -f "$intent" ]]; then
 		uid=$(sed -n 's/^uid=//p' "$intent")
 	else
@@ -104,33 +294,36 @@ cmd_create() {
 		uid=$(next_uid)
 		echo "uid=$uid" > "$intent"
 	fi
-	id -u "$user" >/dev/null 2>&1 || useradd --uid "$uid" --user-group --no-create-home \
-		--home-dir "$root/home" --shell /usr/sbin/nologin "$user"
-	[[ "$(id -u "$user")" == "$uid" ]] || die "user $user does not match its recorded UID"
+	ensure_account "$name" "$uid"
+	disk_bytes=$(to_bytes "$disk")
+	ensure_quota "$uid" "$disk_bytes"
 
 	# Root owns the project directory, so a project cannot swap a child for a
 	# symlink that root-run tooling would later follow.
-	install -d -o root -g "$user" -m 0750 "$root"
-	for child in workspace home cache state artifacts tmp; do
+	is_subvolume "$root" || btrfs -q subvolume create -i "1/$uid" "$root"
+	chown "root:$user" "$root"
+	chmod 0750 "$root"
+	for child in "${captured_children[@]}"; do
 		install -d -o "$user" -g "$user" -m 0700 "$root/$child"
 	done
+	for child in "${excluded_children[@]}"; do
+		make_private_subvolume "$uid" "$root/$child"
+	done
 
-	{
-		echo "[Slice]"
-		echo "MemoryHigh=$memory_high"
-		echo "MemoryMax=$memory_max"
-		echo "MemorySwapMax=0"
-		echo "TasksMax=$tasks"
-		[[ -z "$cpu" ]] || echo "CPUQuota=$cpu%"
-	} > "$(slice_file "$uid").tmp"
-	mv "$(slice_file "$uid").tmp" "$(slice_file "$uid")"
-	systemctl daemon-reload
+	write_slice "$uid" "$memory_high" "$memory_max" "$tasks" "$cpu"
 
-	printf 'name=%s\nuid=%s\ncreated=%s\nprofile=native-restricted\n' \
-		"$name" "$uid" "$(date -u +%FT%TZ)" > "$registry/$name.tmp"
+	printf 'name=%s\nuid=%s\ncreated=%s\nprofile=native-restricted\ndisk_limit_bytes=%s\n' \
+		"$name" "$uid" "$(date -u +%FT%TZ)" "$disk_bytes" > "$registry/$name.tmp"
 	mv "$registry/$name.tmp" "$registry/$name"
 	rm -f "$intent"
 	echo "$name"
+}
+
+project_absent() { # <name>
+	local suffix
+	for suffix in "" .deleting .restoring; do
+		[[ ! -e "$registry/$1$suffix" ]] || die "project already exists: $1"
+	done
 }
 
 check_size() {
@@ -156,8 +349,16 @@ cmd_inspect() {
 	echo "path=$projects/$name"
 	echo "address=$(agentos-netns address "$uid")"
 	echo "disk_bytes=$(du -sb "$projects/$name" | cut -f1)"
+	echo "disk_used_bytes=$(disk_used "$name" "$uid")"
+	echo "snapshots=$(snapshot_ids "$name" | wc -l)"
 	echo "commands=$(running_ids "$uid" | wc -l)"
 	sed -n 's/^\([A-Za-z]*=.*\)$/limit.\1/p' "$(slice_file "$uid")"
+}
+
+# -F shows only the qgroups above this path, so no name a project chose reaches
+# the output that this parses.
+disk_used() { # <name> <uid>
+	btrfs qgroup show -F --raw "$projects/$1" 2>/dev/null | awk -v group="1/$2" '$1 == group { print $2 }'
 }
 
 running_ids() { # <uid>
@@ -258,6 +459,21 @@ cmd_stop() {
 	fi
 }
 
+# `run` takes no lock. A masked slice makes systemd refuse any command that
+# passed its registry check just before the caller renamed the registry entry.
+stop_project() { # <name> <uid>
+	local _
+	ln -sf /dev/null "$(slice_file "$2")"
+	systemctl daemon-reload
+	systemctl stop "$(slice_of "$2")" 2>/dev/null || true
+	pkill -KILL -U "$2" 2>/dev/null || true
+	for _ in $(seq 1 50); do
+		pgrep -U "$2" >/dev/null || break
+		sleep 0.1
+	done
+	! pgrep -U "$2" >/dev/null || die "processes of $1 are still running"
+}
+
 cmd_delete() {
 	local name=${1:-}
 	check_name "$name"
@@ -265,39 +481,380 @@ cmd_delete() {
 	take_lock
 	if [[ -f "$registry/$name" ]]; then
 		mv "$registry/$name" "$registry/$name.deleting"
+	elif [[ -f "$registry/$name.restoring" ]]; then
+		mv "$registry/$name.restoring" "$registry/$name.deleting"
 	fi
 	[[ -f "$registry/$name.deleting" ]] || die "no such project: $name"
 
 	# Every step tolerates absence, so a delete that failed can be run again.
 	# The tombstone stays until the end, so a failure cannot free the name.
-	local uid _
+	local uid
 	uid=$(sed -n 's/^uid=//p' "$registry/$name.deleting")
 
-	# `run` takes no lock. A masked slice makes systemd refuse any command that
-	# passed its registry check just before the rename above.
-	ln -sf /dev/null "$(slice_file "$uid")"
-	systemctl daemon-reload
-	systemctl stop "$(slice_of "$uid")" 2>/dev/null || true
-	pkill -KILL -U "$uid" 2>/dev/null || true
-	for _ in $(seq 1 50); do
-		pgrep -U "$uid" >/dev/null || break
-		sleep 0.1
-	done
-	! pgrep -U "$uid" >/dev/null || die "processes of $name are still running"
+	stop_project "$name" "$uid"
 	systemctl stop "agentos-netns@$uid.service" 2>/dev/null || true
 	# A project can create nested Btrfs subvolumes, so no --one-file-system here.
-	# Read-only ones would fail the rm. Inode 256 is the root of a subvolume.
-	find "$projects/$name" -type d -inum 256 -exec btrfs property set -f {} ro false \; 2>/dev/null || true
-	rm -rf "${projects:?}/$name"
+	remove_tree "${projects:?}/$name"
+	remove_tree "${snapshots:?}/$name"
 	if id -u "aos-$name" >/dev/null 2>&1; then
 		userdel "aos-$name"
 	fi
 	if getent group "aos-$name" >/dev/null; then
 		groupdel "aos-$name"
 	fi
-	rm -f "$(slice_file "$uid")"
+	rm -f "$(slice_file "$uid")" "$registry/$name.restore" "$registry/$name.slice"
 	systemctl daemon-reload
+	# The qgroup keeps members until the kernel finishes dropping them.
+	btrfs subvolume sync "$data" >/dev/null 2>&1 || true
+	btrfs qgroup clear-stale "$data" >/dev/null 2>&1 || true
+	btrfs qgroup destroy "1/$uid" "$data" 2>/dev/null || true
 	rm -f "$registry/$name.deleting"
+}
+
+cmd_snapshot() {
+	local name="" label="" kind=manual
+	while (( $# )); do
+		case "$1" in
+			--label) label=${2:-}; check_label "$label"; shift 2 ;;
+			--auto) kind=auto; shift ;;
+			-*) usage ;;
+			*) [[ -z "$name" ]] || usage; name=$1; shift ;;
+		esac
+	done
+	check_name "$name"
+	take_lock
+	load_storage_conf
+	project_uid "$name" >/dev/null
+	is_subvolume "$projects/$name" || die "project $name has no subvolume. Create it again to use snapshots."
+	local free id
+	free=$(free_percent)
+	(( free >= reserve_percent )) || die "only $free% of the disk is free, and snapshots need $reserve_percent%"
+	clean_interrupted "$name"
+	id=$(make_snapshot "$name" "$kind" "$label")
+	[[ "$kind" != auto ]] || prune_snapshots "$name" "$keep_automatic"
+	echo "$id"
+}
+
+cmd_snapshots() {
+	local name=${1:-} id meta
+	check_name "$name"
+	project_uid "$name" >/dev/null
+	printf 'ID\tKIND\tCREATED\tOMITTED\tLABEL\n'
+	while read -r id; do
+		meta=$snapshots/$name/$id/meta
+		printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$(snapshot_field "$meta" kind)" "$(snapshot_field "$meta" created)" \
+			"$(snapshot_field "$meta" omitted_subvolumes)" "$(snapshot_field "$meta" label)"
+	done < <(snapshot_ids "$name")
+}
+
+cmd_snapshot_delete() {
+	local name=${1:-} id=${2:-}
+	check_name "$name"
+	check_snapshot_id "$id"
+	[[ "${3:-}" == --yes ]] || die "snapshot-delete cannot be undone. Pass --yes to confirm."
+	take_lock
+	project_uid "$name" >/dev/null
+	[[ -f "$snapshots/$name/$id/meta" ]] || die "no such snapshot: $id"
+	remove_snapshot "$name" "$id" || die "a backup is reading snapshot $id"
+}
+
+cmd_prune() {
+	local name=${1:-}
+	check_name "$name"
+	take_lock
+	load_storage_conf
+	if (( $# == 3 )) && [[ "$2" == --keep && "$3" =~ ^[0-9]+$ ]]; then
+		keep_automatic=$3
+	elif (( $# != 1 )); then
+		usage
+	fi
+	project_uid "$name" >/dev/null
+	prune_snapshots "$name" "$keep_automatic"
+}
+
+cmd_restore() {
+	local name="" id="" confirmed=false
+	while (( $# )); do
+		case "$1" in
+			--snapshot) id=${2:-}; check_snapshot_id "$id"; shift 2 ;;
+			--yes) confirmed=true; shift ;;
+			-*) usage ;;
+			*) [[ -z "$name" ]] || usage; name=$1; shift ;;
+		esac
+	done
+	check_name "$name"
+	[[ -n "$id" ]] || usage
+	$confirmed || die "restore replaces project data and stops its commands. Pass --yes to confirm."
+	take_lock
+	load_storage_conf
+
+	# NAME.restoring keeps `run` away. NAME.restore names the target, so a rerun
+	# after a failure can only finish the same restore.
+	local entry=$registry/$name intent=$registry/$name.restoring target=$registry/$name.restore
+	local root=$projects/$name tree=$snapshots/$name/$id/tree
+	local incoming=$snapshots/$name/.incoming outgoing=$snapshots/$name/.outgoing uid slice saved_slice safety
+	if [[ -f "$entry" ]]; then
+		is_subvolume "$root" || die "project $name has no subvolume. Create it again to use snapshots."
+		[[ -d "$tree" ]] || die "no such snapshot: $id"
+		echo "snapshot=$id" > "$target.tmp"
+		mv "$target.tmp" "$target"
+		mv "$entry" "$intent"
+	fi
+	[[ -f "$intent" ]] || die "no such project: $name"
+	local recorded
+	recorded=$(sed -n 's/^snapshot=//p' "$target")
+	[[ "$recorded" == "$id" ]] || die "an interrupted restore of $name targets $recorded. Run it again with that snapshot."
+	[[ -d "$tree" ]] || die "no such snapshot: $id"
+
+	uid=$(sed -n 's/^uid=//p' "$intent")
+	slice=$(slice_file "$uid")
+	saved_slice=$registry/$name.slice
+	[[ -L "$slice" ]] || cp "$slice" "$saved_slice"
+	stop_project "$name" "$uid"
+
+	# Each rename is atomic, and the set of paths that exist identifies the step
+	# that a failed restore reached.
+	if [[ -e "$root" && ! -e "$outgoing" ]]; then
+		if ! grep -q '^safety=' "$target"; then
+			safety=$(make_snapshot "$name" auto pre-restore)
+			echo "safety=$safety" >> "$target"
+		fi
+		remove_tree "$incoming"
+		build_tree "$uid" "$tree" "$incoming"
+		mv -T "$root" "$outgoing"
+	fi
+	[[ ! -e "$incoming" ]] || mv -T "$incoming" "$root"
+	remove_tree "$outgoing"
+
+	mv -f "$saved_slice" "$slice"
+	systemctl daemon-reload
+	safety=$(sed -n 's/^safety=//p' "$target")
+	mv "$intent" "$entry"
+	rm -f "$target"
+	prune_snapshots "$name" "$keep_automatic"
+	echo "$safety"
+}
+
+cmd_backup() {
+	local name=${1:-} id=${3:-}
+	check_name "$name"
+	[[ $# -eq 3 && "${2:-}" == --snapshot ]] || usage
+	check_snapshot_id "$id"
+	[[ ! -t 1 ]] || die "backup writes a binary stream. Redirect or pipe its output."
+	local uid dir=$snapshots/$name/$id
+	uid=$(project_uid "$name")
+	[[ -f "$dir/meta" ]] || die "no such snapshot: $id"
+	# A shared lock keeps prune and snapshot-delete off this snapshot.
+	exec 8<"$dir/meta"
+	flock -s 8
+
+	local slice hash
+	slice=$(slice_file "$uid")
+	hash=$(mktemp)
+	trap "rm -f -- '$hash'" EXIT
+	exec 6> >(sha256sum | cut -c1-64 > "$hash")
+	local hasher=$!
+	{
+		echo "$backup_magic"
+		printf 'name=%s\nuid=%s\n' "$name" "$uid"
+		printf 'snapshot=%s\n' "$id"
+		printf 'kind=%s\n' "$(snapshot_field "$dir/meta" kind)"
+		printf 'label=%s\n' "$(snapshot_field "$dir/meta" label)"
+		printf 'created=%s\n' "$(snapshot_field "$dir/meta" created)"
+		printf 'omitted_subvolumes=%s\n' "$(snapshot_field "$dir/meta" omitted_subvolumes)"
+		printf 'disk_limit_bytes=%s\n' "$(sed -n 's/^disk_limit_bytes=//p' "$registry/$name")"
+		printf 'memory_high=%s\n' "$(sed -n 's/^MemoryHigh=//p' "$slice")"
+		printf 'memory_max=%s\n' "$(sed -n 's/^MemoryMax=//p' "$slice")"
+		printf 'tasks=%s\n' "$(sed -n 's/^TasksMax=//p' "$slice")"
+		printf 'cpu=%s\n' "$(sed -n 's/^CPUQuota=\(.*\)%$/\1/p' "$slice")"
+		grep '^toolchain\.' "$registry/$name" || true
+		echo end
+		btrfs -q send "$dir/tree"
+	} | tee /dev/fd/6
+	exec 6>&-
+	wait "$hasher"
+	cat "$hash"
+}
+
+# Rejects a received tree that a project could not have produced.
+check_received() { # <tree> <uid>
+	local tree=$1 uid=$2 child found
+	is_subvolume "$tree" || die "backup holds no subvolume"
+	[[ "$(btrfs property get "$tree" ro)" == ro=true ]] || die "backup did not finish as a read-only subvolume"
+	[[ "$(stat -c '%u:%g %a' "$tree")" == "0:$uid 750" ]] || die "backup has the wrong project root ownership"
+	found=$(find "$tree" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
+	[[ "$found" == "artifacts home state workspace " ]] || die "backup has an unexpected layout"
+	for child in "${captured_children[@]}"; do
+		[[ -d "$tree/$child" && ! -L "$tree/$child" ]] || die "backup has a bad directory: $child"
+		[[ "$(stat -c '%u:%g %a' "$tree/$child")" == "$uid:$uid 700" ]] || die "backup has wrong ownership on $child"
+	done
+	found=$(find "$tree" -mindepth 2 \( ! -uid "$uid" -o ! -gid "$uid" -o -perm /6000 -o -type b -o -type c \) -print -quit)
+	[[ -z "$found" ]] || die "backup holds a file that its project could not have created"
+}
+
+cmd_recover() {
+	[[ $# -eq 0 && ! -t 0 ]] || usage
+	load_storage_conf
+	local spool
+	spool=$(mktemp -d "$snapshots/.recover.XXXXXXXX")
+	trap "remove_tree '$spool'" EXIT
+	cat > "$spool/stream"
+
+	# The trailer is the SHA-256 of everything before it, so nothing reaches
+	# `btrfs receive` until the whole backup has arrived intact.
+	local size
+	size=$(stat -c %s "$spool/stream")
+	(( size > 65 )) || die "backup is truncated"
+	[[ "$(head -c -65 "$spool/stream" | sha256sum | cut -c1-64)" == "$(tail -c 65 "$spool/stream" | head -c 64 | tr -d '\0')" ]] \
+		|| die "backup is truncated or corrupted"
+
+	local line key value offset=0 count=0 name="" uid="" id="" kind="" label="" created="" omitted=""
+	local disk_bytes="" memory_high="" memory_max="" tasks="" cpu="" toolchain_lines=() tool
+	exec 7<"$spool/stream"
+	IFS= read -r line <&7 || die "not an Agent OS backup"
+	[[ "$line" == "$backup_magic" ]] || die "not an Agent OS backup"
+	offset=$(( ${#line} + 1 ))
+	while IFS= read -r line <&7; do
+		offset=$(( offset + ${#line} + 1 ))
+		[[ "$line" != end ]] || break
+		count=$((count + 1))
+		(( count <= 64 )) || die "backup header is too long"
+		[[ "$line" == *=* ]] || die "backup header is malformed"
+		key=${line%%=*}
+		value=${line#*=}
+		case "$key" in
+			name) name=$value ;;
+			uid) uid=$value ;;
+			snapshot) id=$value ;;
+			kind) kind=$value ;;
+			label) label=$value ;;
+			created) created=$value ;;
+			omitted_subvolumes) omitted=$value ;;
+			disk_limit_bytes) disk_bytes=$value ;;
+			memory_high) memory_high=$value ;;
+			memory_max) memory_max=$value ;;
+			tasks) tasks=$value ;;
+			cpu) cpu=$value ;;
+			toolchain.*)
+				tool=${key#toolchain.}
+				check_toolchain "$tool" "$value"
+				toolchain_lines+=("$line")
+				;;
+			*) die "backup header has an unknown field" ;;
+		esac
+	done
+	exec 7<&-
+
+	check_name "$name"
+	check_snapshot_id "$id"
+	[[ "$uid" =~ ^[0-9]+$ ]] && (( uid >= uid_first && uid <= uid_last )) || die "backup has a UID outside the project range"
+	[[ "$kind" == manual || "$kind" == auto ]] || die "backup has an invalid kind"
+	[[ -z "$label" ]] || check_label "$label"
+	[[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] || die "backup has an invalid time"
+	[[ "$omitted" =~ ^[0-9]+$ ]] || die "backup has an invalid subvolume count"
+	[[ "$disk_bytes" =~ ^[1-9][0-9]*$ ]] || die "backup has an invalid disk limit"
+	check_size "$memory_high"
+	check_size "$memory_max"
+	[[ "$tasks" =~ ^[1-9][0-9]*$ ]] || die "backup has an invalid task limit"
+	[[ -z "$cpu" || "$cpu" =~ ^[1-9][0-9]*$ ]] || die "backup has an invalid CPU limit"
+
+	take_lock
+	project_absent "$name"
+	local intent=$registry/$name.creating dir=$snapshots/$name/$id
+	# NAME.creating marks a recovery that can resume, as it does for `create`.
+	if [[ -f "$intent" ]]; then
+		[[ "$(sed -n 's/^uid=//p' "$intent")" == "$uid" ]] || die "an interrupted create of $name holds another UID"
+	else
+		! id -u "aos-$name" >/dev/null 2>&1 || die "user aos-$name already exists"
+		! getent passwd "$uid" >/dev/null || die "UID $uid is already in use"
+		! getent group "$uid" >/dev/null || die "GID $uid is already in use"
+		[[ ! -e "$snapshots/$name" ]] || die "snapshots of $name already exist"
+	fi
+
+	if [[ ! -d "$dir" ]]; then
+		mkdir "$spool/snapshot"
+		# --chroot confines the stream's paths to the new directory.
+		tail -c "+$((offset + 1))" "$spool/stream" | head -c -65 | btrfs -q receive --chroot "$spool/snapshot" >/dev/null
+		[[ "$(find "$spool/snapshot" -mindepth 1 -maxdepth 1 -printf '%f\n')" == tree ]] || die "backup has an unexpected layout"
+		check_received "$spool/snapshot/tree" "$uid"
+		printf 'id=%s\nkind=%s\nlabel=%s\ncreated=%s\nomitted_subvolumes=%s\n' \
+			"$id" "$kind" "$label" "$created" "$omitted" > "$spool/snapshot/meta"
+		echo "uid=$uid" > "$intent"
+		# UIDs are never reused, so the counter must pass every recovered UID.
+		local next=$uid_first
+		[[ ! -e "$counter" ]] || next=$(<"$counter")
+		if (( uid >= next )); then
+			echo $((uid + 1)) > "$counter.tmp"
+			mv "$counter.tmp" "$counter"
+		fi
+		install -d -m 0700 "$snapshots/$name"
+		mv -T "$spool/snapshot" "$dir"
+	fi
+
+	ensure_account "$name" "$uid"
+	ensure_quota "$uid" "$disk_bytes"
+	local root=$projects/$name incoming=$snapshots/$name/.incoming
+	if [[ ! -e "$root" ]]; then
+		remove_tree "$incoming"
+		build_tree "$uid" "$dir/tree" "$incoming"
+		mv -T "$incoming" "$root"
+	fi
+	write_slice "$uid" "$memory_high" "$memory_max" "$tasks" "$cpu"
+	{
+		printf 'name=%s\nuid=%s\ncreated=%s\nprofile=native-restricted\ndisk_limit_bytes=%s\n' \
+			"$name" "$uid" "$created" "$disk_bytes"
+		(( ${#toolchain_lines[@]} == 0 )) || printf '%s\n' "${toolchain_lines[@]}"
+	} > "$registry/$name.tmp"
+	mv "$registry/$name.tmp" "$registry/$name"
+	rm -f "$intent"
+	echo "$name"
+}
+
+# Run by agentos-storage.timer. It adds new subvolumes to their project's limit,
+# frees automatic snapshots when space runs low, and stops the largest project
+# if that is not enough.
+cmd_storage_check() {
+	take_lock
+	load_storage_conf
+	local entry name uid free used largest="" largest_uid="" largest_used=-1
+	for entry in "$registry"/*; do
+		name=${entry##*/}
+		[[ -f "$entry" && "$name" != *.* ]] || continue
+		is_subvolume "$projects/$name" || continue
+		enroll_subvolumes "$name" "$(project_uid "$name")"
+	done
+	if btrfs qgroup show --raw "$data" 2>&1 >/dev/null | grep -q inconsistent; then
+		btrfs quota rescan "$data" >/dev/null 2>&1 || true
+	fi
+	btrfs qgroup clear-stale "$data" >/dev/null 2>&1 || true
+
+	free=$(free_percent)
+	if (( free >= reserve_percent )); then
+		echo "storage: ok, $free% free"
+		return 0
+	fi
+	echo "storage: low, $free% free. Keeping one automatic snapshot per project."
+	for entry in "$registry"/*; do
+		name=${entry##*/}
+		[[ -f "$entry" && "$name" != *.* ]] || continue
+		prune_snapshots "$name" 1
+	done
+	btrfs subvolume sync "$data" >/dev/null 2>&1 || true
+	free=$(free_percent)
+	(( free < critical_percent )) || { echo "storage: $free% free after pruning"; return 0; }
+
+	for entry in "$registry"/*; do
+		name=${entry##*/}
+		[[ -f "$entry" && "$name" != *.* ]] || continue
+		uid=$(project_uid "$name")
+		used=$(disk_used "$name" "$uid")
+		if [[ -n "$used" ]] && (( used > largest_used )); then
+			largest=$name largest_uid=$uid largest_used=$used
+		fi
+	done
+	[[ -n "$largest" ]] || return 0
+	echo "storage: critical, $free% free. Stopping commands of $largest, which uses $largest_used bytes."
+	systemctl stop "$(slice_of "$largest_uid")" 2>/dev/null || true
 }
 
 if [[ "${1:-}" == system ]]; then
@@ -308,6 +865,11 @@ fi
 if [[ "$EUID" -ne 0 ]]; then
 	echo "agentos: must run as root" >&2
 	exit 1
+fi
+
+if [[ "${1:-} ${2:-}" == "storage check" && $# -eq 2 ]]; then
+	cmd_storage_check
+	exit 0
 fi
 
 [[ "${1:-}" == project && $# -ge 2 ]] || usage
@@ -326,6 +888,13 @@ case "$verb" in
 	toolchain) cmd_toolchain "$@" ;;
 	logs) cmd_logs "$@" ;;
 	stop) cmd_stop "$@" ;;
+	snapshot) cmd_snapshot "$@" ;;
+	snapshots) cmd_snapshots "$@" ;;
+	snapshot-delete) cmd_snapshot_delete "$@" ;;
+	prune) cmd_prune "$@" ;;
+	restore) cmd_restore "$@" ;;
+	backup) cmd_backup "$@" ;;
+	recover) cmd_recover "$@" ;;
 	delete) cmd_delete "$@" ;;
 	*) usage ;;
 esac

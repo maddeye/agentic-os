@@ -58,6 +58,8 @@ jobs:
             command: tests/integration/run
           - name: hostd
             command: tests/hostd/run
+          - name: storage
+            command: tests/storage/run
     name: ${{ matrix.name }}
     env:
       AOS_BUILD_IMAGE_LOADED: "1"
