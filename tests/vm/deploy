@@ -3,8 +3,9 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 vm="$repo/tests/vm/vm"
+"$repo/packaging/build"
 "$vm" reset
 "$vm" up
-tar -C "$repo" -cf - bin configs packaging tests \
+tar -C "$repo" -cf - bin configs packaging tests .build/bin \
 	| "$vm" ssh 'sudo mkdir -p /opt/aos-tests && sudo tar -C /opt/aos-tests --no-same-owner -xf - && sudo chmod -R a+rX /opt/aos-tests'
 "$vm" ssh 'sudo /opt/aos-tests/packaging/install.sh'

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Runs the Phase 2 end-to-end test in a freshly reset VM.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+guest=/opt/aos-tests/tests/hostd/guest
+
+step() { # <script>
+	echo "### $1"
+	"$vm" ssh "sudo $guest/$1.sh"
+}
+
+"$repo/tests/vm/deploy"
+step setup
+step packages
+step privileges
+step toolchains
+step interrupt
+
+echo "### power loss"
+docker kill agentos-test-vm >/dev/null
+"$vm" up
+step after_power_loss
+"$vm" down
+echo "PASS: hostd"

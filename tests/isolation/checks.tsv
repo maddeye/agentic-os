@@ -47,6 +47,12 @@ system_bus	3	root	open	blocked	$CONNECT unix /run/dbus/system_bus_socket
 capabilities	3	root	blocked	blocked	grep -q '^CapEff:.*[1-9a-f]' /proc/self/status
 replace_own_project_dir	3	root	blocked	blocked	mv $ALPHA_ROOT/workspace $ALPHA_ROOT/w2 && mv $ALPHA_ROOT/w2 $ALPHA_ROOT/workspace
 
+# Host-maintenance broker
+hostd_socket	3	root	blocked	blocked	$CONNECT unix /run/agentos/hostd.sock
+hostd_client	3	root	blocked	blocked	/usr/local/sbin/agentos system status
+hostd_state_read	3	root	blocked	blocked	cd /var/lib/agent-os/metadata/hostd
+hostd_policy_write	2	root	blocked	blocked	touch /etc/agent-os/hostd-policy.json
+
 # Host credentials and state
 agentos_cli	3	root	blocked	blocked	/usr/local/sbin/agentos project list
 shadow	3	root	blocked	blocked	cat /etc/shadow

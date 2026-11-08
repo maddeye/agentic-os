@@ -1,6 +1,8 @@
 # `agentos` command reference
 
-`agentos` is the administrator CLI for project lifecycle. It runs as root. Project agents cannot run it. `packaging/install.sh` installs it to `/usr/local/sbin/agentos`.
+`agentos project` is the administrator CLI for project lifecycle. It runs as root. Project agents cannot run it. `packaging/install.sh` installs it to `/usr/local/sbin/agentos`.
+
+`agentos system` is the client for [`hostd`](HOSTD.md). The administrator and the system agent can use it.
 
 The command and service names are provisional.
 
@@ -17,6 +19,8 @@ The command and service names are provisional.
 | `agentos project ps NAME` | Prints the IDs of running commands. |
 | `agentos project logs NAME ID` | Prints the journal output of a command. |
 | `agentos project stop NAME [ID]` | Stops one command, or every command in the project. |
+| `agentos project toolchain NAME TOOL VERSION` | Puts an installed global toolchain on the project's `PATH`. |
+| `agentos project toolchain NAME TOOL --clear` | Removes that selection. |
 | `agentos project delete NAME --yes` | Stops all commands and removes all project data and the identity. |
 
 ## `create` flags
@@ -32,7 +36,32 @@ The command and service names are provisional.
 
 `NAME` matches `^[a-z]([a-z0-9-]{0,26}[a-z0-9])?$`.
 
-## Exit status
+## System commands
+
+Replies are JSON on standard output. Refusals go to standard error.
+
+| Command | Result |
+|---|---|
+| `agentos system status` | Reports host package state, changes by state, and toolchains. |
+| `agentos system package install NAME... --reason TEXT` | Plans an install. Applies it at once if policy allows. |
+| `agentos system package remove NAME... --reason TEXT` | Plans a removal. |
+| `agentos system toolchain install NAME VERSION --reason TEXT` | Plans a global toolchain install from the catalog. |
+| `agentos system toolchain remove NAME VERSION --reason TEXT` | Plans a global toolchain removal. |
+| `agentos system change show ID` | Prints one change. |
+| `agentos system change approve ID` | Approves a change. Administrator only. |
+| `agentos system change reject ID` | Rejects a change. Administrator only. |
+| `agentos system change apply ID` | Applies an approved change and verifies it. |
+| `agentos system change history` | Prints the last 200 audit events. |
+| `agentos system recover` | Finishes any interrupted change. |
+
+| Status | Meaning |
+|---|---|
+| 0 | The request succeeded. |
+| 1 | `hostd` refused the request, the socket is unreachable, or the change failed. |
+| 2 | Invalid usage. |
+| 3 | The change is waiting for an administrator. |
+
+## Project exit status
 
 | Status | Meaning |
 |---|---|
@@ -56,4 +85,4 @@ If `delete` fails, run it again. The name stays reserved and the project accepts
 
 Commands in one project share a network namespace and reach each other on `127.0.0.1`. The administrator can reach a project port at the address that `inspect` prints.
 
-A project's commands start with `HOME` set to `home/` and the working directory set to `workspace/`. The `PATH` starts with `home/.local/bin`. The administrator's environment is not passed in.
+A project's commands start with `HOME` set to `home/` and the working directory set to `workspace/`. The `PATH` starts with `home/.local/bin`, followed by any selected toolchains. The administrator's environment is not passed in.

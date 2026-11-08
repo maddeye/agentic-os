@@ -81,6 +81,22 @@ The last line is `PASS: integration`. The command needs internet access. It test
 - Deletion with running processes, symlinks, read-only subvolumes, a failed first attempt, and concurrent command starts.
 - Recovery of a crashed create, and refusal of accounts that `agentos` did not allocate.
 
+## Run the hostd suite
+
+```bash
+tests/hostd/run
+```
+
+The last line is `PASS: hostd`. The command needs internet access. It tests these behaviors:
+
+- The exit criterion: the system agent requests `ripgrep`, an administrator approves, and both projects run it.
+- Self-approval, stale plans, rejected changes, policy limits, and hostile package names.
+- Socket access, forged identity, malformed input, and what the system agent cannot do.
+- Two global Node.js versions selected per project, read-only access, bad digests, and failed checks.
+- A broker killed during a package script and during a toolchain install, a concurrent request, and a power cut.
+
+`packaging/build` runs the Rust unit tests and builds the binaries with Debian's compiler in a pinned container. Every VM deployment runs it, so a failing unit test stops the suites.
+
 ## Regenerate the baseline
 
 ```bash
@@ -89,4 +105,4 @@ tests/vm/baseline
 
 The command writes `doc/BASELINE.md` from a capability probe and three fresh boots.
 
-The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, toolchain installation and promotion, snapshot and restore latency, GUI startup and capture, behavior under pressure, and recovery timing.
+The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, global package promotion timing, snapshot and restore latency, GUI startup and capture, behavior under pressure, and recovery timing.

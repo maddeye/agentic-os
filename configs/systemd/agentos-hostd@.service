@@ -1,0 +1,13 @@
+[Unit]
+Description=Agent OS host-maintenance broker request
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/local/sbin/agentos-hostd
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+RuntimeMaxSec=3600
+# Maintenance never needs project data, including in package scripts.
+InaccessiblePaths=-/var/lib/agent-os/projects
+InaccessiblePaths=-/var/lib/agent-os/snapshots

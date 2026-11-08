@@ -1,0 +1,22 @@
+{
+  "automatic_packages": [],
+  "automatic_toolchains": [],
+  "protected_package_prefixes": [
+    "linux-",
+    "grub",
+    "shim",
+    "efibootmgr",
+    "initramfs-tools",
+    "systemd",
+    "udev",
+    "dbus",
+    "openssh",
+    "sudo",
+    "nftables",
+    "iptables",
+    "apt",
+    "dpkg",
+    "libc6",
+    "cloud-init"
+  ]
+}

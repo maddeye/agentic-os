@@ -61,7 +61,8 @@ Projects have no IPv6 route. DNS uses the upstream servers in `/run/systemd/reso
 |---|---|---|---|
 | `/opt/agent-os/toolchains` | `root:root` | `0755` | Shared toolchains, read-only to projects |
 | `/var/lib/agent-os` | `root:root` | `0711` | Btrfs mount point, no listing for projects |
-| `/var/lib/agent-os/metadata` | `root:root` | `0700` | Project definitions and host state |
+| `/var/lib/agent-os/metadata` | `root:root` | `0700` | Project definitions, `hostd` changes and audit log |
+| `/var/lib/agent-os/system-agent` | `agentos-system` | `0700` | System agent home |
 | `/var/lib/agent-os/snapshots` | `root:root` | `0700` | Managed snapshots |
 | `/var/lib/agent-os/projects` | `root:root` | `0711` | Project parent, no listing for projects |
 | `projects/NAME` | `root:aos-NAME` | `0750` | Project root |
@@ -88,7 +89,7 @@ The Btrfs subvolume hierarchy stays open until Phase 3. The measured behavior li
 | Temporary storage | `BindPaths=@ROOT@/tmp:/tmp` and `/var/tmp` | Each project has its own temporary directories. | Holder fails to start, and the suite reports the failure |
 | Shared memory | `TemporaryFileSystem=/dev/shm:mode=1777` | Each unit has a private `/dev/shm`. | Sole control for `dev_shm_cross`. `PrivateDevices` does not isolate `/dev/shm`. |
 | IPC | `PrivateIPC=yes` | SysV IPC and POSIX queues are private. | Sole control for `sysv_shm_cross` and `mqueue_cross` |
-| Runtime sockets | `TemporaryFileSystem=/run`, `BindReadOnlyPaths=-/run/systemd/resolve` | D-Bus and host sockets are absent, and DNS still works. | Sole control for `system_bus` |
+| Runtime sockets | `TemporaryFileSystem=/run`, `BindReadOnlyPaths=-/run/systemd/resolve` | D-Bus, `hostd`, and host sockets are absent, and DNS still works. | Sole control for `system_bus` |
 | Processes | `ProtectProc=invisible` | Other users' processes are hidden. | Sole control for `proc_visible` and `proc_cmdline` |
 | Network | `NetworkNamespacePath`, `Requires`, `After` | Each project has its own interfaces and loopback. | Sole control for `abstract_socket`, `loopback_tcp`, `host_loopback_ssh`, and `host_uplink_ssh` |
 | Kernel | `Protect*`, `SystemCallFilter`, `PrivateDevices` | Kernel interfaces and devices are hidden. | Not run |

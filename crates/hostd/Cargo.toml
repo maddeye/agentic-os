@@ -1,0 +1,22 @@
+[package]
+name = "agentos-hostd"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "hostd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agentos-hostd"
+path = "src/bin/hostd.rs"
+
+[[bin]]
+name = "agentos-hostctl"
+path = "src/bin/hostctl.rs"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,6 +1,6 @@
 # Agent OS threat model
 
-Status: Phase 1, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
+Status: Phase 2, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
 
 Check names in this document are rows in [`tests/isolation/checks.tsv`](../tests/isolation/checks.tsv). The [isolation design](ISOLATION.md) explains the controls.
 
@@ -37,8 +37,8 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 |---|---|---|---|
 | B1 | Project to project | Separate UIDs, mode `0700` directories, mount, IPC, and network namespaces, `ProtectProc=invisible` | Tested |
 | B2 | Project to host | No capabilities, no new privileges, read-only system paths, private `/run`, network namespace, and `nftables` input policy | Tested |
-| B3 | Project to system agent | Separate UID, and `hostd` accepts peers by `SO_PEERCRED` | Design only, Phase 2 |
-| B4 | System agent to root | Typed `hostd` operations, policy, and audit | Design only, Phase 2 |
+| B3 | Project to system agent | Separate UID, private `/run`, socket group, and `hostd` accepts peers by `SO_PEERCRED` | Tested |
+| B4 | System agent to root | Typed `hostd` operations, policy, human approval, and audit | Tested. Package scripts remain gap 6. |
 | B5 | Network to host | OpenSSH keys over private networking | Design only, Phase 5 |
 | B6 | Project to kernel | Seccomp filter and hidden kernel interfaces reduce exposure only | Partial by design |
 
@@ -63,6 +63,17 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Read host credentials or metadata | T1, T2 | A6, A7 | File modes, `ProtectHome=yes`, masked `/var/lib/agent-os` | `shadow`, `ssh_host_key`, `admin_ssh_keys`, `metadata_read`, `snapshots_list` |
 | Change kernel state | T1, T2 | A4, A9 | `Protect*` settings, no capabilities | `dmesg`, `sysctl_write`, `cgroup_write`, `mount_tmpfs`, `block_device` |
 | Exhaust host memory or tasks | T1, T2 | A9 | Per-project slice limits | `memory_limit`, `tasks_limit` |
+| Call `hostd` or read its state from a project | T1, T2 | A4, A5, A8 | Private `/run`, socket mode, `SO_PEERCRED`, file modes | `hostd_socket`, `hostd_client`, `hostd_state_read`, `tests/hostd/guest/privileges.sh` |
+| Impersonate the system agent or administrator | T1, T2, T3 | A4, A5 | Identity comes only from the kernel, and unknown fields are rejected | `tests/hostd/guest/privileges.sh` |
+| Approve one's own change | T3 | A4, A5 | Only peer UID 0 can decide | `tests/hostd/guest/packages.sh` |
+| Change the transaction after approval | T3 | A4, A5 | Apply compares a new simulation with the approved plan | `tests/hostd/guest/packages.sh` |
+| Smuggle apt options, paths, regexes, or removal suffixes through a name | T3 | A4, A5 | Character check, and apt must act on exactly the requested names | `tests/hostd/guest/packages.sh` |
+| Get a risky package through the automatic list | T3 | A4, A5 | Automatic only for clean installs with no unit, setuid file, or protected name | `tests/hostd/guest/packages.sh` |
+| Publish a tampered or partial toolchain | T3, T4 | A5 | Catalog digest, staged check as `nobody`, one rename | `tests/hostd/guest/toolchains.sh`, `tests/hostd/guest/interrupt.sh` |
+| Replace a shared toolchain from a project | T1, T2 | A5 | `ProtectSystem=strict`, root-owned files | `toolchain_write`, `tests/hostd/guest/toolchains.sh` |
+| Read project data as the system agent | T3 | A1, A2 | Project modes, and broker instances and their package scripts have no project data mounted | `tests/hostd/guest/privileges.sh`, `tests/hostd/guest/interrupt.sh` |
+| Hide a privileged change | T3 | A8 | Root-only log, synced before each step | `tests/hostd/guest/packages.sh` |
+| Leave the host broken by interrupting a transaction | T3, power loss | A5, A9 | Durable `applying` record, repair before the next change | `tests/hostd/guest/interrupt.sh`, `tests/hostd/guest/after_power_loss.sh` |
 
 ## Accepted gaps
 
@@ -73,11 +84,14 @@ Each gap stays open until a later change closes it. The suite marks the first on
 3. **User namespaces stay enabled.** `user_namespace` requires them, because Chromium and Electron sandboxes need them in Phase 4. They add kernel attack surface for T6.
 4. **The kernel is shared.** T6 defeats the design. Use the `vm` execution profile for workloads that warrant a separate kernel.
 5. **Same-project processes are not isolated from each other.** An agent can read every credential that its project holds. A secret delivered to a project is visible to all of that project's code.
-6. **Package installation scripts run as root.** T4 has full control during installation. Policy and approval in Phase 2 reduce the chance of T4, and they do not contain it.
+6. **Package installation scripts run as root.** T4 has full control during installation. Policy and approval reduce the chance of T4, and they do not contain it. A script can also add file capabilities, which the content scan cannot see.
 7. **A project can fill the shared Btrfs filesystem.** No quota exists until Phase 3. This stops every other project from writing.
 8. **A project can create its own Btrfs subvolumes.** They fall outside parent snapshots, so Phase 3 must decide how to handle them.
 9. **Project output can contain terminal escape sequences.** `run`, `shell`, and `logs` pass the output to the administrator's terminal unfiltered.
 10. **Project output goes to the host journal.** journald's size limits apply, and the journal keeps secrets that a project prints. A project can also push out older host log entries.
+11. **The system agent can grow the audit log.** T3 can send refused requests until the data disk fills. Log rotation does not exist yet. Projects cannot reach this path.
+12. **A human approves what `change show` displays.** The plan lists actions, units, and setuid files. It cannot judge whether a package is trustworthy.
+13. **A leaked connection keeps its identity.** `SO_PEERCRED` describes who connected. If the system agent passes an open socket to another process, that process acts as the system agent.
 
 ## Rules for later phases
 
