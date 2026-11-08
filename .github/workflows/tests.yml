@@ -1,0 +1,101 @@
+name: Tests
+
+on:
+  # Runs on main seed the VM cache, which GitHub shares with every pull request.
+  push:
+    branches: [main]
+    paths-ignore: ["doc/**", "assets/**", "README.md"]
+  pull_request:
+    paths-ignore: ["doc/**", "assets/**", "README.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      vm-key: ${{ steps.key.outputs.vm-key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The VM never falls back to emulation, so a runner without KVM fails here.
+      - name: Open /dev/kvm
+        run: sudo chmod a+rw /dev/kvm
+      - name: Compute the VM cache key
+        id: key
+        run: echo "vm-key=vm-${{ hashFiles('tests/vm/image.lock', 'tests/vm/Dockerfile', 'tests/vm/user-data.tmpl', 'tests/vm/vm', 'packaging/build.Dockerfile') }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.key.outputs.vm-key }}
+          path: |
+            .vm/baseline
+            .vm/id_ed25519
+            .vm/id_ed25519.pub
+            .vm/images.tar
+      - name: Build the VM baseline and run the unit tests
+        run: tests/ci/prepare
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: prepare-diagnostics
+          path: .vm/serial.log
+          if-no-files-found: ignore
+
+  suite:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: vm-lifecycle
+            command: tests/vm/test-lifecycle
+          - name: isolation
+            command: tests/isolation/run
+          - name: integration
+            command: tests/integration/run
+          - name: hostd
+            command: tests/hostd/run
+    name: ${{ matrix.name }}
+    env:
+      AOS_BUILD_IMAGE_LOADED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Open /dev/kvm
+        run: sudo chmod a+rw /dev/kvm
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ needs.prepare.outputs.vm-key }}
+          fail-on-cache-miss: true
+          path: |
+            .vm/baseline
+            .vm/id_ed25519
+            .vm/id_ed25519.pub
+            .vm/images.tar
+      - name: Load the pinned images
+        run: docker load -q -i .vm/images.tar
+      - name: Run ${{ matrix.name }}
+        run: ${{ matrix.command }}
+      - name: Collect the guest journal
+        if: failure()
+        continue-on-error: true
+        run: |
+          mkdir -p .vm/results
+          timeout 120 tests/vm/vm ssh 'sudo journalctl -b --no-pager' > .vm/results/journal.log
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.name }}-diagnostics
+          path: |
+            .vm/results/
+            .vm/serial.log
+          if-no-files-found: ignore
