@@ -73,25 +73,26 @@ fn is_package(operation: &Operation) -> bool {
     matches!(operation, Operation::PackageInstall { .. } | Operation::PackageRemove { .. })
 }
 
-fn current_actions(operation: &Operation) -> Result<Vec<Action>, Refusal> {
-    if is_package(operation) {
-        apt::simulate(operation)
+fn still_matches(change: &Change) -> bool {
+    let current = if is_package(&change.operation) {
+        apt::still_matches(change.id, &change.operation, &change.impact)
     } else {
-        toolchain::actions(operation)
+        toolchain::still_matches(&change.operation, &change.impact)
+    };
+    current.unwrap_or(false)
+}
+
+fn run_change(change: &Change) -> Result<(), String> {
+    if is_package(&change.operation) {
+        apt::apply(change.id, &change.operation, &change.impact)
+    } else {
+        toolchain::apply(change.id, &change.operation)
     }
 }
 
-fn run_change(id: u64, operation: &Operation) -> Result<(), String> {
+fn verify(operation: &Operation, actions: &[Action]) -> (bool, String) {
     if is_package(operation) {
-        apt::apply(operation)
-    } else {
-        toolchain::apply(id, operation)
-    }
-}
-
-fn verify(operation: &Operation) -> (bool, String) {
-    if is_package(operation) {
-        apt::verify(operation)
+        apt::verify(operation, actions)
     } else {
         toolchain::verify(operation)
     }
@@ -160,24 +161,26 @@ impl Broker {
     }
 
     fn plan(&self, caller: &Caller, reason: String, operation: Operation) -> Result<Value, Refusal> {
-        let planned = validate_reason(&reason)
-            .and_then(|()| operation.validate())
-            .and_then(|()| Policy::load())
-            .and_then(|policy| {
-                let impact = if is_package(&operation) { apt::plan(&operation)? } else { toolchain::plan(&operation)? };
-                let decision = policy.evaluate(&operation, &impact);
-                Ok((impact, decision))
-            });
-        let (impact, decision) = match planned {
-            Ok(result) => result,
+        let checked = validate_reason(&reason).and_then(|()| operation.validate()).and_then(|()| Policy::load());
+        let policy = match checked {
+            Ok(policy) => policy,
+            Err(refusal) => return self.refuse_plan(caller, &operation, refusal),
+        };
+        let id = self.store.next_id()?;
+        // Planning runs apt as root, so its record comes first.
+        self.audit(caller, "planning", json!({ "change": id, "action": operation, "reason": reason }))?;
+        let planned = if is_package(&operation) { apt::plan(id, &operation) } else { toolchain::plan(&operation) };
+        let impact = match planned {
+            Ok(impact) => impact,
             Err(refusal) => {
-                self.audit(caller, "plan_refused", json!({ "action": operation, "result": refusal.code, "detail": refusal.message }))?;
-                return Err(refusal);
+                apt::discard_artifacts(id);
+                return self.refuse_plan(caller, &operation, refusal);
             }
         };
+        let decision = policy.evaluate(&operation, &impact);
         let automatic = decision.level == Level::Automatic;
         let change = Change {
-            id: self.store.next_id()?,
+            id,
             reason,
             operation,
             requested_by: caller.name.clone(),
@@ -194,6 +197,11 @@ impl Broker {
         Ok(json!(change))
     }
 
+    fn refuse_plan(&self, caller: &Caller, operation: &Operation, refusal: Refusal) -> Result<Value, Refusal> {
+        self.audit(caller, "plan_refused", json!({ "action": operation, "result": refusal.code, "detail": refusal.message }))?;
+        Err(refusal)
+    }
+
     fn decide(&self, caller: &Caller, id: u64, approve: bool) -> Result<Value, Refusal> {
         let mut change = self.store.load(id)?;
         if change.state != State::AwaitingApproval {
@@ -204,6 +212,9 @@ impl Broker {
         change.updated_at = now();
         self.audit(caller, if approve { "approved" } else { "rejected" }, json!({ "change": id, "action": change.operation }))?;
         self.store.save(&change)?;
+        if !approve {
+            apt::discard_artifacts(id);
+        }
         Ok(json!(change))
     }
 
@@ -214,11 +225,12 @@ impl Broker {
             return Err(Refusal::new("not_approved", format!("change {id} is not approved")));
         }
         // Approval covers the exact transaction that the approver saw.
-        if !current_actions(&change.operation).is_ok_and(|actions| actions == change.impact.actions) {
+        if !still_matches(&change) {
             change.state = State::Stale;
             change.updated_at = now();
             self.audit(caller, "stale", json!({ "change": id, "action": change.operation, "result": "stale" }))?;
             self.store.save(&change)?;
+            apt::discard_artifacts(id);
             return Err(Refusal::new("stale", format!("the transaction for change {id} has changed. Request a new plan.")));
         }
 
@@ -227,12 +239,12 @@ impl Broker {
         self.audit(caller, "applying", json!({ "change": id, "action": change.operation, "approved_by": change.approved_by }))?;
         self.store.save(&change)?;
 
-        let ran = run_change(id, &change.operation);
-        let (verified, mut detail) = verify(&change.operation);
-        if let Err(error) = ran {
-            detail = format!("{error}. {detail}");
+        let ran = run_change(&change);
+        let (verified, detail) = verify(&change.operation, &change.impact.actions);
+        match ran {
+            Ok(()) => self.finish(caller, change, verified, detail, false),
+            Err(error) => self.finish(caller, change, false, format!("{error}. {detail}"), false),
         }
-        self.finish(caller, change, verified, detail, false)
     }
 
     fn finish(&self, caller: &Caller, mut change: Change, verified: bool, detail: String, recovered: bool) -> Result<Value, Refusal> {
@@ -250,6 +262,7 @@ impl Broker {
             "recovery": recovery,
         }))?;
         self.store.save(&change)?;
+        apt::discard_artifacts(change.id);
         Ok(json!(change))
     }
 
@@ -258,13 +271,14 @@ impl Broker {
         let mut recovered = Vec::new();
         for change in self.store.all()?.into_iter().filter(|c| c.state == State::Applying) {
             let id = change.id;
+            self.audit(caller, "recovery_started", json!({ "change": id, "action": change.operation }))?;
             let repair = if is_package(&change.operation) {
-                apt::repair()
+                apt::repair(&change.impact.actions)
             } else {
                 toolchain::clean_staging(id);
                 "removed staging files".to_string()
             };
-            let (verified, detail) = verify(&change.operation);
+            let (verified, detail) = verify(&change.operation, &change.impact.actions);
             self.audit(caller, "recovery", json!({ "change": id, "repair": repair, "verified": verified }))?;
             self.finish(caller, change, verified, format!("interrupted. {repair} {detail}"), true)?;
             recovered.push(id);

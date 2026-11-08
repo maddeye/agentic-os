@@ -63,7 +63,7 @@ impl Policy {
                 reasons.push(format!("{} is a protected package", action.target));
             }
         }
-        reasons.extend(impact.services.iter().map(|unit| format!("ships systemd unit {unit}")));
+        reasons.extend(impact.services.iter().map(|unit| format!("ships autostart file {unit}")));
         reasons.extend(impact.setuid_files.iter().map(|file| format!("ships setuid file {file}")));
     }
 }

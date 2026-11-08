@@ -5,7 +5,7 @@
 
 use crate::exec::{require, run, tool};
 use crate::protocol::{Action, ActionKind, Impact, Operation, Refusal};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,7 +20,7 @@ struct Catalog {
     toolchains: Vec<Entry>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     name: String,
@@ -122,7 +122,20 @@ pub fn actions(operation: &Operation) -> Result<Vec<Action>, Refusal> {
 pub fn plan(operation: &Operation) -> Result<Impact, Refusal> {
     let (name, version) = fields(operation);
     let used = if matches!(operation, Operation::ToolchainRemoveGlobal { .. }) { used_by(name, version) } else { Vec::new() };
-    Ok(Impact { actions: actions(operation)?, used_by_projects: used, ..Impact::default() })
+    Ok(Impact { actions: actions(operation)?, toolchain_source: source(operation)?, used_by_projects: used, ..Impact::default() })
+}
+
+/// The whole catalog entry, so that approval covers its URL, digest, and check.
+fn source(operation: &Operation) -> Result<Option<serde_json::Value>, Refusal> {
+    let (name, version) = fields(operation);
+    match operation {
+        Operation::ToolchainInstallGlobal { .. } => Ok(Some(serde_json::to_value(lookup(name, version)?)?)),
+        _ => Ok(None),
+    }
+}
+
+pub fn still_matches(operation: &Operation, impact: &Impact) -> Result<bool, Refusal> {
+    Ok(actions(operation)? == impact.actions && source(operation)? == impact.toolchain_source)
 }
 
 /// Runs the catalog check as `nobody`, so a bad archive cannot use root here.
@@ -175,12 +188,16 @@ fn install(id: u64, entry: &Entry) -> Result<(), String> {
     step(tool("chown").args(["-hR", "root:root"]).arg(&tree), "chown")?;
     step(tool("chmod").args(["-R", "u+rwX,go+rX,go-w,ug-s,-t"]).arg(&tree), "chmod")?;
     check(entry, &tree).map_err(|error| format!("staged check failed: {error}"))?;
+    // The contents must reach the disk first. A rename can survive power loss
+    // while unsynced files in the tree do not.
+    step(tool("sync").arg("--file-system").arg(&tree), "sync")?;
 
     let target = published(&entry.name, &entry.version);
     let parent = target.parent().expect("published paths have a parent");
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     fs::rename(&tree, &target).map_err(|error| error.to_string())?;
     sync_dir(parent)?;
+    sync_dir(&stage)?;
     clean_staging(id);
     Ok(())
 }

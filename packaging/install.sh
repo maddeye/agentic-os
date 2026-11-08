@@ -17,7 +17,8 @@ install -D -m 0644 "$repo/configs/toolchains/catalog.json" /usr/share/agent-os/t
 [ -e /etc/agent-os/hostd-policy.json ] || install -D -m 0644 "$repo/configs/policies/hostd-policy.json" /etc/agent-os/hostd-policy.json
 install -m 0644 "$repo/configs/systemd/agentos-project.slice" "$repo/configs/systemd/agentos-firewall.service" \
 	"$repo/configs/systemd/agentos-netns@.service" "$repo/configs/systemd/agentos-hostd.socket" \
-	"$repo/configs/systemd/agentos-hostd@.service" /etc/systemd/system/
+	"$repo/configs/systemd/agentos-hostd@.service" "$repo/configs/systemd/agentos-hostd-admin.socket" \
+	"$repo/configs/systemd/agentos-hostd-admin@.service" /etc/systemd/system/
 
 install -d -o root -g root -m 0711 /var/lib/agent-os /var/lib/agent-os/projects
 install -d -o root -g root -m 0700 /var/lib/agent-os/metadata /var/lib/agent-os/metadata/projects /var/lib/agent-os/snapshots \
@@ -25,4 +26,4 @@ install -d -o root -g root -m 0700 /var/lib/agent-os/metadata /var/lib/agent-os/
 install -d -o agentos-system -g agentos-system -m 0700 /var/lib/agent-os/system-agent
 install -d -o root -g root -m 0755 /opt/agent-os /opt/agent-os/toolchains
 systemctl daemon-reload
-systemctl enable --now agentos-firewall.service agentos-hostd.socket
+systemctl enable --now agentos-firewall.service agentos-hostd.socket agentos-hostd-admin.socket

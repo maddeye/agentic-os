@@ -1,6 +1,7 @@
 # Helpers shared by the hostd steps. Source this file.
 source /opt/aos-tests/tests/integration/guest/lib.sh
 audit=/var/lib/agent-os/metadata/hostd/audit.jsonl
+artifacts=/var/lib/agent-os/metadata/hostd/artifacts
 
 # Runs a command as the system agent, with the identity and nothing else.
 sys() { setpriv --reuid=agentos-system --regid=agentos-system --clear-groups --reset-env -- env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/var/lib/agent-os/system-agent "$@"; }

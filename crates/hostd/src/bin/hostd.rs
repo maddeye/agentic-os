@@ -2,12 +2,14 @@
 //! socket on standard input, and stops the instance's whole cgroup with it.
 
 use hostd::broker::{Broker, Caller};
-use hostd::protocol::{Refusal, Request, Response, MAX_REQUEST_BYTES};
-use std::io::{BufRead, BufReader, Read, Write};
+use hostd::protocol::{read_line, Refusal, Request, Response};
+use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::time::Duration;
+
+const REQUEST_LIMIT: Duration = Duration::from_secs(10);
 
 /// The kernel recorded these when the client connected. The client cannot alter them.
 fn peer_credentials(stream: &UnixStream) -> std::io::Result<libc::ucred> {
@@ -31,13 +33,7 @@ fn peer_credentials(stream: &UnixStream) -> std::io::Result<libc::ucred> {
 }
 
 fn read_request(stream: &UnixStream) -> Result<Request, Refusal> {
-    let mut line = Vec::new();
-    BufReader::new(stream.take(MAX_REQUEST_BYTES + 1))
-        .read_until(b'\n', &mut line)
-        .map_err(|error| Refusal::new("malformed", error.to_string()))?;
-    if line.len() as u64 > MAX_REQUEST_BYTES {
-        return Err(Refusal::new("malformed", "request is too large"));
-    }
+    let line = read_line(stream, REQUEST_LIMIT)?;
     serde_json::from_slice(&line).map_err(|error| Refusal::new("malformed", error.to_string()))
 }
 
@@ -48,7 +44,6 @@ fn main() -> ExitCode {
         eprintln!("agentos-hostd: standard input is not a Unix socket");
         return ExitCode::FAILURE;
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
 
     let caller = Caller::resolve(peer.uid, peer.pid);
     let broker = Broker::default();

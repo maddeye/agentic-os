@@ -1,0 +1,14 @@
+[Unit]
+Description=Agent OS host-maintenance broker socket for the administrator
+
+[Socket]
+ListenStream=/run/agentos/hostd-admin.sock
+Accept=yes
+SocketUser=root
+SocketGroup=root
+SocketMode=0600
+DirectoryMode=0755
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

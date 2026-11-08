@@ -4,9 +4,14 @@
 //! caller, and each operation is a closed variant with validated fields.
 
 use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::os::unix::net::UnixStream;
+use std::time::{Duration, Instant};
 
 pub const SOCKET: &str = "/run/agentos/hostd.sock";
-pub const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+/// Root-only, with its own connection limit, so the system agent cannot fill it.
+pub const ADMIN_SOCKET: &str = "/run/agentos/hostd-admin.sock";
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_PACKAGES: usize = 32;
 const MAX_REASON_CHARS: usize = 512;
 
@@ -79,9 +84,21 @@ pub struct Action {
     pub to: Option<String>,
 }
 
+/// One package file that a plan downloaded, scanned, and will install.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Artifact {
+    pub name: String,
+    pub version: String,
+    pub architecture: String,
+    pub file: String,
+    pub sha256: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Impact {
     pub actions: Vec<Action>,
+    pub artifacts: Vec<Artifact>,
+    pub toolchain_source: Option<serde_json::Value>,
     pub download_bytes: u64,
     pub services: Vec<String>,
     pub setuid_files: Vec<String>,
@@ -182,6 +199,32 @@ impl Operation {
     }
 }
 
+/// Reads one line. The limit covers the whole request, so a client that sends
+/// one byte at a time cannot hold a broker instance past it.
+pub fn read_line(mut stream: &UnixStream, limit: Duration) -> Result<Vec<u8>, Refusal> {
+    let deadline = Instant::now() + limit;
+    let (mut line, mut chunk) = (Vec::new(), [0u8; 4096]);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Refusal::new("malformed", "request timed out"));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        let count = stream.read(&mut chunk).map_err(|error| Refusal::new("malformed", error.to_string()))?;
+        line.extend_from_slice(&chunk[..count]);
+        if line.len() > MAX_REQUEST_BYTES {
+            return Err(Refusal::new("malformed", "request is too large"));
+        }
+        if let Some(end) = line.iter().position(|byte| *byte == b'\n') {
+            line.truncate(end);
+            return Ok(line);
+        }
+        if count == 0 {
+            return Ok(line);
+        }
+    }
+}
+
 pub fn validate_reason(reason: &str) -> Result<(), Refusal> {
     let count = reason.chars().count();
     if (1..=MAX_REASON_CHARS).contains(&count) && !reason.chars().any(char::is_control) {
@@ -206,6 +249,29 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Request>(body).is_err(), "accepted {body}");
         }
+    }
+
+    #[test]
+    fn a_slow_client_cannot_outlast_the_request_limit() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let drip = std::thread::spawn(move || {
+            use std::io::Write;
+            while writer.write_all(b"x").is_ok() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let started = Instant::now();
+        assert!(read_line(&reader, Duration::from_millis(100)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(reader);
+        drip.join().unwrap();
+    }
+
+    #[test]
+    fn read_line_stops_at_the_newline() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        std::io::Write::write_all(&mut writer, b"{}\nignored").unwrap();
+        assert_eq!(read_line(&reader, Duration::from_secs(1)).unwrap(), b"{}");
     }
 
     #[test]
