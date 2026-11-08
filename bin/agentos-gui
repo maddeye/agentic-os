@@ -1,0 +1,776 @@
+#!/usr/bin/python3
+# Headless graphical sessions for one project. Runs as the project, in its sandbox,
+# and needs no privilege. doc/GUI.md explains the design.
+#
+# Each session has one supervisor process. It owns the compositor, the applications,
+# and metadata.json. Every other process asks it through a mode 0700 Unix socket, so
+# the metadata has one writer and a session is alive exactly when the socket answers.
+import argparse
+import contextlib
+import ctypes
+import fcntl
+import json
+import os
+import pwd
+import re
+import selectors
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+RUN_ROOT = Path("/tmp/gui")
+PROJECTS = Path("/var/lib/agent-os/projects")
+BACKEND = "sway-headless"
+OUTPUT = "HEADLESS-1"
+SEAT_POINTER_AND_KEYBOARD = 3
+START_TIMEOUT = 30
+STOP_GRACE = 3
+RECORDER_GRACE = 5
+EVENT_GAP = 0.008
+MAX_TEXT = 4096
+LIVE_STATES = ("starting", "running")
+
+# X11 keysym values, which RFB uses for key events.
+KEYSYMS = {
+	"Return": 0xff0d, "Tab": 0xff09, "Escape": 0xff1b, "BackSpace": 0xff08,
+	"Delete": 0xffff, "Home": 0xff50, "End": 0xff57, "Page_Up": 0xff55,
+	"Page_Down": 0xff56, "Left": 0xff51, "Up": 0xff52, "Right": 0xff53,
+	"Down": 0xff54, "Shift": 0xffe1, "Control": 0xffe3, "Alt": 0xffe9,
+	"Super": 0xffeb, "space": 0x20,
+	**{f"F{n}": 0xffbd + n for n in range(1, 13)},
+}
+BUTTONS = {"left": 1, "middle": 2, "right": 4}
+TEXT_KEYS = {"\n": "Return", "\t": "Tab"}
+
+
+class Refused(Exception):
+	"""The session cannot do what was asked. The message goes to the caller."""
+
+
+def die(message):
+	print(f"agentos-gui: {message}", file=sys.stderr)
+	sys.exit(1)
+
+
+def now():
+	return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def project_name():
+	user = pwd.getpwuid(os.getuid()).pw_name
+	if not user.startswith("aos-"):
+		die("this command runs inside a project")
+	return user[len("aos-"):]
+
+
+def session_id(text):
+	if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", text):
+		raise argparse.ArgumentTypeError("use 1 to 32 of a-z, 0-9, _ and -, starting with a letter or digit")
+	return text
+
+
+def resolution(text):
+	match = re.fullmatch(r"(\d{3,4})x(\d{3,4})", text)
+	if not match or not (320 <= int(match[1]) <= 7680 and 200 <= int(match[2]) <= 4320):
+		raise argparse.ArgumentTypeError("use WIDTHxHEIGHT, from 320x200 to 7680x4320")
+	return text
+
+
+class Paths:
+	def __init__(self, session):
+		self.run = RUN_ROOT / session
+		self.control = self.run / "control.sock"
+		self.viewer = self.run / "viewer.sock"
+		self.bus = self.run / "bus"
+		self.wayland = self.run / "wayland-1"
+		self.display = self.run / "display"
+		self.artifacts = PROJECTS / project_name() / "artifacts/gui" / session
+		self.metadata = self.artifacts / "metadata.json"
+		self.screenshots = self.artifacts / "screenshots"
+		self.recording = self.artifacts / "recording.mkv"
+		self.inputs = self.artifacts / "inputs.jsonl"
+		self.logs = self.artifacts / "logs"
+
+
+def answers(paths):
+	with socket.socket(socket.AF_UNIX) as probe:
+		try:
+			probe.connect(str(paths.control))
+		except OSError:
+			return False
+	return True
+
+
+def read_metadata(paths):
+	try:
+		return json.loads(paths.metadata.read_text())
+	except (OSError, ValueError):
+		return None
+
+
+def write_metadata(paths, metadata):
+	temporary = paths.metadata.with_suffix(".tmp")
+	temporary.write_text(json.dumps(metadata, indent=2) + "\n")
+	temporary.replace(paths.metadata)
+
+
+@contextlib.contextmanager
+def registry_lock():
+	RUN_ROOT.mkdir(mode=0o700, exist_ok=True)
+	with open(RUN_ROOT / ".lock", "w") as lock:
+		fcntl.flock(lock, fcntl.LOCK_EX)
+		yield
+
+
+def reap_orphans():
+	"""Clears what a dead supervisor left behind. The caller holds the registry lock."""
+	for run in RUN_ROOT.iterdir():
+		if run.is_dir() and not answers(Paths(run.name)):
+			shutil.rmtree(run, ignore_errors=True)
+	for metadata_file in (PROJECTS / project_name() / "artifacts/gui").glob("*/metadata.json"):
+		paths = Paths(metadata_file.parent.name)
+		metadata = read_metadata(paths)
+		if metadata and metadata.get("state") in LIVE_STATES and not answers(paths):
+			metadata["state"] = "orphaned"
+			metadata["stopped_at"] = now()
+			write_metadata(paths, metadata)
+
+
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+
+def die_with_parent():
+	PR_SET_PDEATHSIG = 1
+	libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+
+
+class Rfb:
+	"""The one RFB client of a session. Its connection keeps the virtual pointer and
+	keyboard attached, which gives applications a seat with both for the whole session."""
+
+	def __init__(self, path):
+		self.sock = socket.socket(socket.AF_UNIX)
+		self.sock.settimeout(5)
+		self.sock.connect(str(path))
+		self.receive(12)
+		self.sock.sendall(b"RFB 003.008\n")
+		types = self.receive(self.receive(1)[0])
+		if 1 not in types:
+			raise OSError("viewer offers no plain unix-socket security type")
+		self.sock.sendall(b"\x01")
+		if self.receive(4) != b"\0\0\0\0":
+			raise OSError("viewer refused the connection")
+		self.sock.sendall(b"\x01")
+		self.receive(20)
+		self.receive(struct.unpack(">I", self.receive(4))[0])
+		self.position = (0, 0)
+
+	def receive(self, count):
+		data = b""
+		while len(data) < count:
+			chunk = self.sock.recv(count - len(data))
+			if not chunk:
+				raise OSError("viewer closed the connection")
+			data += chunk
+		return data
+
+	def send_pointer(self, x, y, mask):
+		self.sock.sendall(struct.pack(">BBHH", 5, mask, x, y))
+		self.position = (x, y)
+		time.sleep(EVENT_GAP)
+
+	def send_key(self, keysym, down):
+		self.sock.sendall(struct.pack(">BBHI", 4, int(down), 0, keysym))
+		time.sleep(EVENT_GAP)
+
+	def tap(self, keysyms):
+		for keysym in keysyms:
+			self.send_key(keysym, True)
+		for keysym in reversed(keysyms):
+			self.send_key(keysym, False)
+
+	def nudge(self):
+		"""Damages the screen. A recorder on a static screen waits for this."""
+		x, y = self.position
+		self.send_pointer(x + 1 if x == 0 else x - 1, y, 0)
+		self.send_pointer(x, y, 0)
+
+
+class App:
+	def __init__(self, process, record):
+		self.process = process
+		self.record = record
+
+
+class Supervisor:
+	def __init__(self, paths, size, listener):
+		self.paths = paths
+		self.listener = listener
+		self.stopping = False
+		self.failure = None
+		self.apps = []
+		self.rfb = None
+		self.recorder = None
+		self.compositor = None
+		self.viewer = None
+		self.bus = None
+		self.size = size
+		self.metadata = {
+			"schema": 1,
+			"project": project_name(),
+			"session": paths.run.name,
+			"backend": BACKEND,
+			"resolution": size,
+			"state": "starting",
+			"started_at": now(),
+			"stopped_at": None,
+			"apps": [],
+			"screenshots": [],
+			"recording": None,
+			"result": None,
+			"error": None,
+		}
+		self.save()
+		self.session_env = {
+			"XDG_RUNTIME_DIR": str(paths.run),
+			"DBUS_SESSION_BUS_ADDRESS": f"unix:path={paths.bus}",
+			"WAYLAND_DISPLAY": paths.wayland.name,
+		}
+		self.base_env = {**os.environ, **self.session_env}
+		self.operations = {
+			"status": self.status,
+			"run": self.run,
+			"windows": self.windows,
+			"type": self.type_text,
+			"key": self.key,
+			"move": self.move,
+			"click": self.click,
+			"screenshot": self.screenshot,
+			"record_start": self.record_start,
+			"record_stop": self.record_stop,
+			"result": self.result,
+			"stop": self.stop,
+		}
+
+	def save(self):
+		write_metadata(self.paths, self.metadata)
+
+	def spawn(self, argv, log, env=None, **options):
+		with open(self.paths.logs / log, "ab") as output:
+			return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+				env=env or self.base_env, preexec_fn=die_with_parent, **options)
+
+	def swaymsg(self, *arguments):
+		sockets = list(self.paths.run.glob("sway-ipc.*.sock"))
+		if not sockets:
+			raise Refused("the compositor is not ready")
+		done = subprocess.run(["swaymsg", "-s", str(sockets[0]), *arguments], capture_output=True, timeout=10)
+		if done.returncode != 0:
+			raise Refused(f"swaymsg failed: {done.stderr.decode(errors='replace').strip()}")
+		return json.loads(done.stdout)
+
+	def wait_until(self, condition, what):
+		deadline = time.monotonic() + START_TIMEOUT
+		while time.monotonic() < deadline:
+			if self.compositor and self.compositor.poll() is not None:
+				raise Refused(f"the compositor exited with status {self.compositor.returncode} during startup")
+			with contextlib.suppress(Refused, OSError):
+				if condition():
+					return
+			time.sleep(0.05)
+		raise Refused(f"timed out waiting for {what}")
+
+	def start(self):
+		paths = self.paths
+		config = paths.run / "sway.conf"
+		config.write_text(
+			f"output {OUTPUT} resolution {self.size}\n"
+			"swaybg_command -\n"
+			"default_border none\n"
+			"default_floating_border none\n"
+			"xwayland enable\n"
+			f"exec printenv DISPLAY > {paths.display}\n")
+		self.bus = self.spawn(["dbus-daemon", "--session", "--nofork", f"--address=unix:path={paths.bus}"], "bus.log")
+		self.compositor = self.spawn(["sway", "-c", str(config)], "compositor.log", env={
+			**self.base_env,
+			"WLR_BACKENDS": "headless",
+			"WLR_RENDERER": "pixman",
+			"WLR_LIBINPUT_NO_DEVICES": "1",
+		})
+		self.wait_until(lambda: self.swaymsg("-t", "get_outputs"), "the compositor")
+		self.wait_until(lambda: paths.display.exists(), "XWayland")
+		self.viewer = self.spawn(["wayvnc", "-u", str(paths.viewer)], "viewer.log")
+		self.wait_until(lambda: paths.viewer.exists(), "the viewer socket")
+		self.wait_until(self.connect_input, "the input connection")
+		self.wait_until(lambda: self.swaymsg("-t", "get_seats")[0]["capabilities"] == SEAT_POINTER_AND_KEYBOARD,
+			"the virtual pointer and keyboard")
+		display = paths.display.read_text().strip()
+		if display:
+			self.session_env["DISPLAY"] = display
+		self.metadata["state"] = "running"
+		self.save()
+
+	def connect_input(self):
+		self.rfb = Rfb(self.paths.viewer)
+		return True
+
+	def require_input(self):
+		if self.rfb is None:
+			raise Refused("the input connection is closed")
+		return self.rfb
+
+	def status(self, _request):
+		return self.metadata
+
+	def run(self, request):
+		number = len(self.apps) + 1
+		env = {**request["env"], **self.session_env, "QT_QPA_PLATFORM": "wayland;xcb", "SDL_VIDEODRIVER": "wayland",
+			"XDG_SESSION_TYPE": "wayland", "ELECTRON_OZONE_PLATFORM_HINT": "auto", "MOZ_ENABLE_WAYLAND": "1",
+			"LIBGL_ALWAYS_SOFTWARE": "1", "NO_AT_BRIDGE": "1"}
+		try:
+			process = self.spawn(request["command"], f"app-{number}.log", env=env,
+				cwd=request["cwd"], start_new_session=True)
+		except OSError as error:
+			raise Refused(f"cannot start {request['command'][0]}: {error.strerror}")
+		record = {"number": number, "command": request["command"], "pid": process.pid, "started_at": now(),
+			"stopped_at": None, "exit_status": None}
+		self.apps.append(App(process, record))
+		self.metadata["apps"].append(record)
+		self.save()
+		return {"app": number}
+
+	def windows(self, _request):
+		def leaves(node):
+			if node.get("pid"):
+				yield node
+			for child in node.get("nodes", []) + node.get("floating_nodes", []):
+				yield from leaves(child)
+		return [{
+			"app_id": node.get("app_id") or node.get("window_properties", {}).get("class"),
+			"title": node.get("name"),
+			"pid": node["pid"],
+			"rect": node["rect"],
+		} for node in leaves(self.swaymsg("-t", "get_tree"))]
+
+	def trace(self, operation, **fields):
+		with open(self.paths.inputs, "a") as inputs:
+			inputs.write(json.dumps({"at": now(), "op": operation, **fields}) + "\n")
+
+	def type_text(self, request):
+		text = request["text"]
+		if len(text) > MAX_TEXT:
+			raise Refused(f"text is longer than {MAX_TEXT} characters")
+		if not all(character in TEXT_KEYS or " " <= character <= "~" for character in text):
+			raise Refused("type accepts only printable ASCII, newline, and tab")
+		rfb = self.require_input()
+		for character in text:
+			rfb.tap([KEYSYMS[TEXT_KEYS[character]] if character in TEXT_KEYS else ord(character)])
+		# Typed text can be a secret, so the trace keeps only its length.
+		self.trace("type", length=len(text))
+		return {}
+
+	def key(self, request):
+		keysyms = []
+		for part in request["key"].split("+"):
+			if part in KEYSYMS:
+				keysyms.append(KEYSYMS[part])
+			elif len(part) == 1 and " " <= part <= "~":
+				keysyms.append(ord(part))
+			else:
+				raise Refused(f"unknown key: {part}")
+		self.require_input().tap(keysyms)
+		self.trace("key", keys=[part if part in KEYSYMS else "<char>" for part in request["key"].split("+")])
+		return {}
+
+	def check_position(self, x, y):
+		width, height = map(int, self.size.split("x"))
+		if not (0 <= x < width and 0 <= y < height):
+			raise Refused(f"position {x},{y} is outside {self.size}")
+
+	def move(self, request):
+		self.check_position(request["x"], request["y"])
+		self.require_input().send_pointer(request["x"], request["y"], 0)
+		self.trace("move", x=request["x"], y=request["y"])
+		return {}
+
+	def click(self, request):
+		self.check_position(request["x"], request["y"])
+		rfb = self.require_input()
+		x, y = request["x"], request["y"]
+		rfb.send_pointer(x, y, 0)
+		rfb.send_pointer(x, y, BUTTONS[request["button"]])
+		rfb.send_pointer(x, y, 0)
+		self.trace("click", x=x, y=y, button=request["button"])
+		return {}
+
+	def screenshot(self, _request):
+		screenshots = self.metadata["screenshots"]
+		name = f"{len(screenshots) + 1:04d}.png"
+		path = self.paths.screenshots / name
+		done = subprocess.run(["grim", "-o", OUTPUT, str(path)], env=self.base_env, capture_output=True, timeout=30)
+		if done.returncode != 0:
+			raise Refused(f"grim failed: {done.stderr.decode(errors='replace').strip()}")
+		screenshots.append({"file": f"screenshots/{name}", "at": now()})
+		self.save()
+		return {"path": str(path)}
+
+	def record_start(self, _request):
+		if self.metadata["recording"] is not None:
+			raise Refused("a session keeps one recording, and this one already has it")
+		self.recorder = self.spawn(["wf-recorder", "-y", "-o", OUTPUT, "-c", "libx264", "-f", str(self.paths.recording)], "recorder.log")
+		self.metadata["recording"] = {"file": self.paths.recording.name, "codec": "h264", "started_at": now(), "stopped_at": None}
+		self.save()
+		return {"path": str(self.paths.recording)}
+
+	def record_stop(self, _request):
+		if self.recorder is None:
+			raise Refused("no recording is running")
+		self.finish_recording()
+		return {"path": str(self.paths.recording)}
+
+	def finish_recording(self):
+		"""wf-recorder finishes the file on SIGINT, and then blocks until the compositor
+		sends one more frame. Damage provides the frame, and the kill is a last resort."""
+		recorder, self.recorder = self.recorder, None
+		recorder.send_signal(signal.SIGINT)
+		deadline = time.monotonic() + RECORDER_GRACE
+		while recorder.poll() is None and time.monotonic() < deadline:
+			with contextlib.suppress(OSError, AttributeError):
+				self.rfb.nudge()
+			time.sleep(0.1)
+		if recorder.poll() is None:
+			recorder.kill()
+			recorder.wait()
+		self.metadata["recording"]["stopped_at"] = now()
+		self.save()
+
+	def result(self, request):
+		self.metadata["result"] = {"outcome": request["outcome"], "detail": request["detail"], "at": now()}
+		self.save()
+		return {}
+
+	def stop(self, _request):
+		self.stopping = True
+		return {}
+
+	def serve_one(self):
+		connection, _ = self.listener.accept()
+		with connection:
+			connection.settimeout(5)
+			try:
+				with connection.makefile("rb") as stream:
+					request = json.loads(stream.readline())
+				try:
+					reply = {"ok": True, "result": self.operations[request["op"]](request)}
+				except Refused as error:
+					reply = {"ok": False, "error": str(error)}
+				connection.sendall(json.dumps(reply).encode() + b"\n")
+			except (OSError, ValueError, KeyError, TypeError, AttributeError):
+				return
+
+	def collect_apps(self):
+		for app in self.apps:
+			status = app.process.poll()
+			if status is not None and app.record["exit_status"] is None:
+				app.record["exit_status"] = 128 - status if status < 0 else status
+				app.record["stopped_at"] = now()
+				self.save()
+
+	def loop(self):
+		selector = selectors.DefaultSelector()
+		selector.register(self.listener, selectors.EVENT_READ, "control")
+		selector.register(self.rfb.sock, selectors.EVENT_READ, "input")
+		while not self.stopping:
+			for key, _ in selector.select(0.1):
+				if key.data == "control":
+					self.serve_one()
+				elif not self.drain_input(selector):
+					break
+			self.collect_apps()
+			if self.compositor.poll() is not None and not self.stopping:
+				self.failure = f"the compositor exited with status {self.compositor.returncode}"
+				self.stopping = True
+
+	def drain_input(self, selector):
+		"""The viewer can send bell or clipboard messages, which nothing here reads."""
+		with contextlib.suppress(BlockingIOError):
+			if self.rfb.sock.recv(65536, socket.MSG_DONTWAIT):
+				return True
+		selector.unregister(self.rfb.sock)
+		self.rfb = None
+		return False
+
+	def shutdown(self):
+		if self.recorder is not None:
+			self.finish_recording()
+		for app in self.apps:
+			if app.process.poll() is None:
+				with contextlib.suppress(ProcessLookupError):
+					os.killpg(app.process.pid, signal.SIGTERM)
+		deadline = time.monotonic() + STOP_GRACE
+		while any(app.process.poll() is None for app in self.apps) and time.monotonic() < deadline:
+			time.sleep(0.05)
+		for app in self.apps:
+			with contextlib.suppress(ProcessLookupError):
+				os.killpg(app.process.pid, signal.SIGKILL)
+			app.process.wait()
+		self.collect_apps()
+		if self.rfb is not None:
+			self.rfb.sock.close()
+		for process in (self.viewer, self.compositor, self.bus):
+			if process is None:
+				continue
+			process.terminate()
+			try:
+				process.wait(STOP_GRACE)
+			except subprocess.TimeoutExpired:
+				process.kill()
+				process.wait()
+		self.metadata["state"] = "failed" if self.failure else "stopped"
+		self.metadata["error"] = self.failure
+		self.metadata["stopped_at"] = now()
+		self.save()
+		shutil.rmtree(self.paths.run, ignore_errors=True)
+
+
+def serve(session, size):
+	paths = Paths(session)
+	with registry_lock():
+		reap_orphans()
+		if paths.artifacts.exists():
+			die(f"session {session} already exists. Choose another ID, or remove it with 'agentos-gui rm'.")
+		paths.run.mkdir(mode=0o700)
+		for directory in (paths.screenshots, paths.logs):
+			directory.mkdir(parents=True)
+		listener = socket.socket(socket.AF_UNIX)
+		listener.bind(str(paths.control))
+		listener.listen(16)
+	supervisor = Supervisor(paths, size, listener)
+	def request_stop(*_):
+		supervisor.stopping = True
+	signal.signal(signal.SIGTERM, request_stop)
+	signal.signal(signal.SIGINT, request_stop)
+	try:
+		supervisor.start()
+		supervisor.loop()
+	except (Refused, OSError, subprocess.SubprocessError) as error:
+		supervisor.failure = str(error)
+	finally:
+		supervisor.shutdown()
+	if supervisor.failure:
+		die(supervisor.failure)
+
+
+def rpc(session, operation, **fields):
+	paths = Paths(session)
+	with socket.socket(socket.AF_UNIX) as connection:
+		connection.settimeout(120)
+		try:
+			connection.connect(str(paths.control))
+		except OSError:
+			die(f"no running session named {session}")
+		connection.sendall(json.dumps({"op": operation, **fields}).encode() + b"\n")
+		with connection.makefile("rb") as stream:
+			line = stream.readline()
+	if not line:
+		die(f"session {session} closed the connection")
+	reply = json.loads(line)
+	if not reply["ok"]:
+		die(reply["error"])
+	return reply["result"]
+
+
+def wait_for_ready(session, timeout):
+	paths = Paths(session)
+	started = time.monotonic()
+	while time.monotonic() - started < timeout:
+		metadata = read_metadata(paths)
+		if metadata is None and time.monotonic() - started > 5:
+			die(f"session {session} did not start")
+		if metadata and metadata["state"] == "running" and answers(paths):
+			return
+		if metadata and metadata["state"] not in LIVE_STATES:
+			die(f"session {session} is {metadata['state']}: {metadata['error']}")
+		time.sleep(0.05)
+	die(f"session {session} is not ready after {timeout} seconds")
+
+
+def cmd_start(args):
+	if args.foreground:
+		serve(args.session, args.size)
+		return
+	subprocess.Popen([os.path.abspath(__file__), "start", args.session, "--size", args.size, "--foreground"],
+		stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+	wait_for_ready(args.session, START_TIMEOUT)
+
+
+def cmd_wait(args):
+	if args.ready:
+		wait_for_ready(args.session, args.timeout)
+		return
+	deadline = time.monotonic() + args.timeout
+	while time.monotonic() < deadline:
+		if args.window:
+			if any(window["app_id"] == args.window for window in rpc(args.session, "windows")):
+				return
+		else:
+			apps = rpc(args.session, "status")["apps"]
+			if not 1 <= args.app <= len(apps):
+				die(f"no application number {args.app}")
+			if apps[args.app - 1]["exit_status"] is not None:
+				sys.exit(apps[args.app - 1]["exit_status"])
+		time.sleep(0.05)
+	die(f"timed out after {args.timeout} seconds")
+
+
+def cmd_run(args):
+	command = args.command[1:] if args.command[:1] == ["--"] else args.command
+	if not command:
+		die("no command given")
+	print(rpc(args.session, "run", command=command, cwd=os.getcwd(), env=dict(os.environ))["app"])
+
+
+def cmd_windows(args):
+	for window in rpc(args.session, "windows"):
+		print(json.dumps(window))
+
+
+def cmd_type(args):
+	rpc(args.session, "type", text=args.text)
+
+
+def cmd_key(args):
+	rpc(args.session, "key", key=args.key)
+
+
+def cmd_move(args):
+	rpc(args.session, "move", x=args.x, y=args.y)
+
+
+def cmd_click(args):
+	rpc(args.session, "click", x=args.x, y=args.y, button=args.button)
+
+
+def cmd_screenshot(args):
+	path = rpc(args.session, "screenshot")["path"]
+	if args.output:
+		shutil.copyfile(path, args.output)
+		path = args.output
+	print(path)
+
+
+def cmd_record(args):
+	print(rpc(args.session, f"record_{args.action}")["path"])
+
+
+def cmd_result(args):
+	rpc(args.session, "result", outcome=args.outcome, detail=args.detail)
+
+
+def cmd_status(args):
+	paths = Paths(args.session)
+	metadata = rpc(args.session, "status") if answers(paths) else read_metadata(paths)
+	if metadata is None:
+		die(f"no session named {args.session}")
+	print(json.dumps(metadata, indent=2))
+
+
+def cmd_view(args):
+	paths = Paths(args.session)
+	if not answers(paths):
+		die(f"no running session named {args.session}")
+	os.execvp("socat", ["socat", "-", f"UNIX-CONNECT:{paths.viewer}"])
+
+
+def cmd_list(_args):
+	with registry_lock():
+		reap_orphans()
+	for metadata_file in sorted((PROJECTS / project_name() / "artifacts/gui").glob("*/metadata.json")):
+		metadata = read_metadata(Paths(metadata_file.parent.name))
+		if metadata:
+			print(f"{metadata['session']}\t{metadata['state']}\t{metadata['resolution']}\t{metadata['started_at']}")
+
+
+def cmd_stop(args):
+	paths = Paths(args.session)
+	if answers(paths):
+		rpc(args.session, "stop")
+		deadline = time.monotonic() + 3 * START_TIMEOUT
+		while answers(paths) and time.monotonic() < deadline:
+			time.sleep(0.05)
+		if answers(paths):
+			die(f"session {args.session} did not stop")
+	metadata = read_metadata(paths)
+	if metadata is None:
+		die(f"no session named {args.session}")
+	print(metadata["state"])
+
+
+def cmd_rm(args):
+	paths = Paths(args.session)
+	if answers(paths):
+		die(f"session {args.session} is running. Stop it first.")
+	if not paths.artifacts.exists():
+		die(f"no session named {args.session}")
+	shutil.rmtree(paths.artifacts)
+
+
+def arguments():
+	parser = argparse.ArgumentParser(prog="agentos-gui", description="Headless graphical sessions for this project.")
+	commands = parser.add_subparsers(dest="name", required=True)
+
+	def command(name, handler, session=True):
+		sub = commands.add_parser(name)
+		sub.set_defaults(handler=handler)
+		if session:
+			sub.add_argument("session", type=session_id)
+		return sub
+
+	start = command("start", cmd_start)
+	start.add_argument("--size", type=resolution, default="1280x720")
+	start.add_argument("--foreground", action="store_true", help="stay in the foreground, for a dedicated unit")
+
+	run = command("run", cmd_run)
+	run.add_argument("command", nargs=argparse.REMAINDER)
+
+	wait = command("wait", cmd_wait)
+	target = wait.add_mutually_exclusive_group(required=True)
+	target.add_argument("--ready", action="store_true")
+	target.add_argument("--window", metavar="APP_ID")
+	target.add_argument("--app", metavar="NUMBER", type=int)
+	wait.add_argument("--timeout", type=float, default=30)
+
+	command("windows", cmd_windows)
+	command("type", cmd_type).add_argument("text")
+	command("key", cmd_key).add_argument("key", help="for example Return or Control+a")
+	move = command("move", cmd_move)
+	click = command("click", cmd_click)
+	for sub in (move, click):
+		sub.add_argument("x", type=int)
+		sub.add_argument("y", type=int)
+	click.add_argument("--button", choices=sorted(BUTTONS), default="left")
+
+	command("screenshot", cmd_screenshot).add_argument("--output")
+	record = command("record", cmd_record, session=False)
+	record.add_argument("action", choices=("start", "stop"))
+	record.add_argument("session", type=session_id)
+	result = command("result", cmd_result)
+	result.add_argument("outcome", choices=("pass", "fail"))
+	result.add_argument("--detail", default="")
+	command("status", cmd_status)
+	command("view", cmd_view)
+	command("list", cmd_list, session=False)
+	command("stop", cmd_stop)
+	command("rm", cmd_rm)
+	return parser.parse_args()
+
+
+if __name__ == "__main__":
+	parsed = arguments()
+	parsed.handler(parsed)

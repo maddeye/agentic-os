@@ -1,6 +1,6 @@
 # Agent OS threat model
 
-Status: Phase 3, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
+Status: Phase 4, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
 
 Check names in this document are rows in [`tests/isolation/checks.tsv`](../tests/isolation/checks.tsv). The [isolation design](ISOLATION.md) explains the controls.
 
@@ -50,7 +50,13 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Discover or reuse data in shared temporary storage | T1, T2 | A1, A2 | Per-project `/tmp`, per-unit `/dev/shm` | `tmp_cross`, `var_tmp_cross`, `dev_shm_cross` |
 | Read another project's IPC objects | T1, T2 | A1 | `PrivateIPC=yes` | `sysv_shm_cross`, `mqueue_cross` |
 | Inspect or signal another project's processes | T1, T2 | A1, A2 | `ProtectProc=invisible`, UID checks | `proc_visible`, `proc_cmdline`, `proc_environ`, `signal` |
-| Connect to another project's GUI socket | T1, T2 | A3 | Socket lives in a mode `0700` directory | `gui_socket` |
+| Connect to another project's GUI socket | T1, T2 | A3 | Sockets live in a mode `0700` directory under the project's own `/tmp` | `gui_socket`, `tests/gui/guest/isolation.sh` |
+| Connect to another project's X11 display through its abstract socket | T1, T2 | A3 | Abstract sockets belong to the network namespace | `tests/gui/guest/isolation.sh` |
+| Read another project's screenshots, recordings, or input traces | T1, T2 | A3 | Project directory modes, mode `0600` files | `tests/gui/guest/isolation.sh` |
+| Reach a GUI viewer over the network | T5 | A3 | The viewer binds only a project-private Unix socket, and remote use goes through SSH and root | `tests/gui/run` |
+| Trick root into opening a project path through a GUI session | T1, T2 | A4 | `agentos project gui` only starts commands as the project, and root opens no project file | `tests/gui/guest/cleanup.sh` |
+| Keep a graphical process after a session ends | T1, T2 | A9 | Applications run in the supervisor's process groups, and the compositor dies with its supervisor | `tests/gui/guest/cleanup.sh` |
+| Keep typed secrets in the input trace | T1, T2 | A3 | The trace stores the length of typed text, and `<char>` for printable keys | `tests/gui/guest/agent.sh` |
 | Reach another project's sockets or ports | T1, T2 | A1, A3 | Per-project network namespace, `nftables` forward policy | `abstract_socket`, `loopback_tcp`, `tests/integration/guest/network.sh` |
 | Reach services on the host, or change the project network | T1, T2 | A4, A6 | Network namespace, `nftables` input policy, no capabilities | `host_loopback_ssh`, `host_uplink_ssh`, `net_admin`, `tests/integration/guest/network.sh` |
 | Modify host files or packages | T1, T2 | A4, A5 | `ProtectSystem=strict`, file modes | `etc_write`, `usr_write`, `boot_write`, `dpkg_db_write`, `apt_install`, `toolchain_write` |
@@ -101,6 +107,9 @@ Each gap stays open until a later change closes it. The suite marks the first on
 12. **A human approves what `change show` displays.** The plan lists actions, units, and setuid files. It cannot judge whether a package is trustworthy.
 15. **Backups are not encrypted or signed.** A stream holds every project secret. The checksum catches damage, and someone who can rewrite the backup can also rewrite the checksum. The checks at `recover` limit what a forged backup can do, but the forged project data is still restored. Encrypt and authenticate the stream outside `agentos`.
 16. **`agentos` does not schedule or rotate backups.** The operator pulls them. A backup is always a full stream.
+17. **A GUI capture holds whatever was on screen.** Screenshots and recordings stay in the project and enter its snapshots and backups. `agentos-gui rm` removes them from the live tree only, and nothing expires them automatically.
+18. **Graphical sessions do not contain the applications in them.** Applications in one session can capture each other and inject input through the compositor. A process that leaves its process group stays alive after `stop`, until its project command ends.
+19. **A viewer can send input.** An administrator who opens `view` can click and type in the session, like the project itself can.
 13. **A leaked connection keeps its identity.** `SO_PEERCRED` describes who connected. If the system agent passes an open socket to another process, that process acts as the system agent.
 
 ## Rules for later phases

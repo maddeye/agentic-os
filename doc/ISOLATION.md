@@ -69,8 +69,8 @@ Projects have no IPv6 route. DNS uses the upstream servers in `/run/systemd/reso
 | `projects/NAME/workspace` | `aos-NAME` | `0700` | Repository checkout, default working directory |
 | `projects/NAME/home` | `aos-NAME` | `0700` | `HOME` and project-local tools |
 | `projects/NAME/cache` | `aos-NAME` | `0700` | `XDG_CACHE_HOME`, private package caches, a nested subvolume |
-| `projects/NAME/state` | `aos-NAME` | `0700` | `XDG_STATE_HOME`, agent state and GUI sockets |
-| `projects/NAME/artifacts` | `aos-NAME` | `0700` | GUI captures and test output |
+| `projects/NAME/state` | `aos-NAME` | `0700` | `XDG_STATE_HOME`, agent state |
+| `projects/NAME/artifacts` | `aos-NAME` | `0700` | GUI captures and test output. `artifacts/gui/` is described in [GUI.md](GUI.md). |
 | `projects/NAME/tmp` | `aos-NAME` | `0700` | Bound over `/tmp` and `/var/tmp`, a nested subvolume |
 
 Root owns `projects/NAME` so that a project cannot replace `workspace` with a symlink. `tmp` is an addition to the architecture layout. Commands in one project share `/tmp` through it, which a per-unit `PrivateTmp=` would prevent.

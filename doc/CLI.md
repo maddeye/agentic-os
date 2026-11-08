@@ -16,6 +16,7 @@ The command and service names are provisional.
 | `agentos project run NAME -- COMMAND [ARG...]` | Runs a command in the sandbox and waits. Returns its exit status. |
 | `agentos project run --detach NAME -- COMMAND [ARG...]` | Starts a command in the background and prints its 8-character ID. |
 | `agentos project shell NAME` | Opens an interactive login shell in the sandbox. |
+| `agentos project gui NAME SUBCOMMAND ...` | Runs an `agentos-gui` subcommand as the project. [GUI.md](GUI.md) lists them. |
 | `agentos project ps NAME` | Prints the IDs of running commands. |
 | `agentos project logs NAME ID` | Prints the journal output of a command. |
 | `agentos project stop NAME [ID]` | Stops one command, or every command in the project. |
@@ -96,5 +97,7 @@ If `delete` fails, run it again. The name stays reserved and the project accepts
 If `restore` fails, run it again with the same snapshot, or run `delete`. The project accepts no commands until one of them completes. If `recover` fails, run it again with the same backup.
 
 Commands in one project share a network namespace and reach each other on `127.0.0.1`. The administrator can reach a project port at the address that `inspect` prints.
+
+A graphical session that `agentos project gui NAME start` created lasts until `stop`, `agentos project stop`, or a reboot. A session that a project command started with `agentos-gui start` ends with that command.
 
 A project's commands start with `HOME` set to `home/` and the working directory set to `workspace/`. The `PATH` starts with `home/.local/bin`, followed by any selected toolchains. The administrator's environment is not passed in.

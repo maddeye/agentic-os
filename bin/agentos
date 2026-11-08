@@ -29,6 +29,7 @@ usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memor
        agentos project run [--detach] NAME -- COMMAND [ARG...]
        agentos project shell NAME
        agentos project toolchain NAME TOOL VERSION|--clear
+       agentos project gui NAME SUBCOMMAND ...    (see doc/GUI.md)
        agentos project ps NAME
        agentos project logs NAME ID
        agentos project stop NAME [ID]
@@ -431,6 +432,22 @@ cmd_run() {
 		exec "${start[@]}" --pty --wait -- /usr/bin/env -- "$@"
 	else
 		exec "${start[@]}" --pipe --wait -- /usr/bin/env -- "$@"
+	fi
+}
+
+# Sessions run as the project, so root only picks the unit and never opens a project
+# path. `start` gets a unit of its own, and the session lasts until something stops it.
+cmd_gui() { # <name> <agentos-gui arguments>
+	local name=${1:-}
+	check_name "$name"
+	shift
+	[[ $# -ge 1 ]] || usage
+	if [[ "$1" == start ]]; then
+		[[ $# -ge 2 ]] || usage
+		cmd_run --detach "$name" -- agentos-gui "$@" --foreground >/dev/null
+		cmd_run "$name" -- agentos-gui wait "$2" --ready
+	else
+		cmd_run "$name" -- agentos-gui "$@"
 	fi
 }
 
@@ -884,6 +901,7 @@ case "$verb" in
 		[[ $# -eq 1 ]] || usage
 		cmd_run "$1" -- /bin/bash -l
 		;;
+	gui) cmd_gui "$@" ;;
 	ps) cmd_ps "$@" ;;
 	toolchain) cmd_toolchain "$@" ;;
 	logs) cmd_logs "$@" ;;

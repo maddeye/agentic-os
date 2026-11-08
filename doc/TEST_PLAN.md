@@ -114,9 +114,25 @@ The last line is `PASS: storage`. It tests these behaviors:
 
 `tests/storage/benchmark` prints the measurements that [STORAGE.md](STORAGE.md) records.
 
+## Run the GUI suite
+
+```bash
+tests/gui/run
+```
+
+The last line is `PASS: gui`. The command needs internet access, because it installs the GUI packages and Chromium through `hostd`. It tests these behaviors:
+
+- The exit criterion: a project agent starts a session, drives a real GTK application with the mouse and keyboard, captures screenshots and video, and stops the session.
+- Chromium inside a session, with its own user namespace sandbox.
+- Two projects with the same session name, Wayland, compositor, viewer, bus, and X11 sockets, and no TCP listener.
+- Remote viewing through SSH, a refused SSH key, and another project's view of the session.
+- Each way that a session ends: `stop`, `agentos project stop`, the starting command exiting, a killed supervisor, and `delete`.
+
+`tests/gui/benchmark` prints the measurements that [GUI.md](GUI.md#software-rendering-benchmark) records.
+
 ## Run the suites in GitHub Actions
 
-`.github/workflows/tests.yml` runs only when you start it, because each run uses about 17 minutes of the private repository's Actions allowance. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.
+`.github/workflows/tests.yml` runs only when you start it, because each run uses about 25 minutes of the private repository's Actions allowance. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.
 
 The `prepare` job fails if the runner has no `/dev/kvm`. It also runs the Rust unit tests. It builds the VM baseline and the two Docker images once, and stores them in the Actions cache. To rebuild them, change an input of the cache key in the workflow, such as `tests/vm/image.lock`.
 
@@ -134,4 +150,4 @@ tests/vm/baseline
 
 The command writes `doc/BASELINE.md` from a capability probe and three fresh boots.
 
-The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, global package promotion timing, GUI startup and capture, behavior under pressure, and recovery timing.
+The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, global package promotion timing, behavior under pressure, and recovery timing. GUI startup and capture are in [GUI.md](GUI.md#software-rendering-benchmark).
