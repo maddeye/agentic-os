@@ -83,8 +83,8 @@ For the initial releases:
 | Filesystem | Btrfs | Preferred |
 | Remote access | OpenSSH over private networking | Proposed |
 | Graphics | Ephemeral headless Wayland sessions | Requirement |
-| GUI backend | Evaluate waymux, Sway, Weston | Open |
-| Legacy GUI | Xvfb/X11 fallback | Proposed |
+| GUI backend | Headless Sway with grim, wf-recorder, and wayvnc. See [GUI.md](GUI.md). | Decided |
+| Legacy GUI | XWayland, inside each Sway session | Decided |
 | Implementation language | Rust | Preferred |
 | Interfaces | CLI first, API later | Proposed |
 
@@ -325,13 +325,13 @@ agentos project restore my-app --snapshot SNAPSHOT_ID
 agentos system package install ripgrep
 agentos system change history
 
-agentos desktop create my-app --resolution 1920x1080
-agentos desktop run my-app -- ./target/debug/my-app
-agentos desktop screenshot my-app --output ui.png
+agentos project gui my-app start demo --size 1920x1080
+agentos project gui my-app run demo -- ./target/debug/my-app
+agentos project gui my-app screenshot demo --output ui.png
 
-agentos desktop record start my-app
-agentos desktop record stop my-app
-agentos desktop stop my-app
+agentos project gui my-app record start demo
+agentos project gui my-app record stop demo
+agentos project gui my-app stop demo
 ```
 
 The exact CLI and service names are provisional because the project name is not finalized.
@@ -971,19 +971,19 @@ Use typed checks or unprivileged execution whenever possible.
 
 ### Phase 4 — On-Demand Graphical Testing
 
-- [ ] Evaluate waymux on Debian.
-- [ ] Evaluate headless Sway or Weston as fallback.
-- [ ] Start a GUI session under a project identity.
-- [ ] Launch a real GTK, Qt, Tauri, or Electron application.
-- [ ] Support keyboard and mouse automation.
-- [ ] Capture screenshots.
-- [ ] Record video.
-- [ ] Save capture metadata.
-- [ ] Test graphical session isolation.
-- [ ] Test authenticated remote viewing.
-- [ ] Test session cleanup.
-- [ ] Benchmark software rendering.
-- [ ] Document optional GPU requirements.
+- [x] Evaluate waymux on Debian.
+- [x] Evaluate headless Sway or Weston as fallback.
+- [x] Start a GUI session under a project identity.
+- [x] Launch a real GTK, Qt, Tauri, or Electron application.
+- [x] Support keyboard and mouse automation.
+- [x] Capture screenshots.
+- [x] Record video.
+- [x] Save capture metadata.
+- [x] Test graphical session isolation.
+- [x] Test authenticated remote viewing.
+- [x] Test session cleanup.
+- [x] Benchmark software rendering.
+- [x] Document optional GPU requirements.
 
 **Exit criterion:** a project agent can test a real graphical application, capture screenshots and video, and stop the session without affecting another project.
 
@@ -1077,12 +1077,9 @@ These decisions must be resolved through prototyping, investigation, or explicit
 
 ### Graphics
 
-- waymux stability and packaging.
-- Sway/Weston compatibility.
 - GUI accessibility automation.
-- Video codec availability.
-- GPU permissions and isolation.
-- Recording retention and sensitive-data protection.
+- GPU permissions and isolation ([requirements](GUI.md#optional-gpu-acceleration)).
+- Automatic retention of recordings.
 
 ### Product
 
@@ -1123,6 +1120,10 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-08 | The system agent is the `agentos-system` account, outside the `aos-` namespace | No project name can collide with it. |
 | 2026-11-08 | Nothing is automatic by default, and approval binds to one exact transaction | The administrator decides what runs unattended. Later package changes cannot widen an approval. |
 | 2026-11-08 | Global toolchains come only from a pinned catalog and publish with one rename | Removes arbitrary global binaries from the API. Projects never see a partial version. |
+| 2026-11-08 | Headless Sway is the GUI backend, and waymux and Weston are not | Every tool comes from Debian, and every required function passed in a project sandbox. waymux listed no window for a GTK3 application, and Weston has no capture or virtual-input protocol that these tools use. See [GUI.md](GUI.md#backend-evaluation). |
+| 2026-11-08 | GUI sessions run entirely as the project, with no daemon and no root step | Root never touches a project path, and project limits apply to the compositor. |
+| 2026-11-08 | One supervisor per session owns its state, and the viewer connection provides the input devices | Sway's headless seat has no pointer or keyboard until a virtual device attaches, and a new device for each action loses keys. |
+| 2026-11-08 | Remote viewing is an RFB byte stream through `ssh` and `agentos project gui ... view` | SSH keys authenticate the viewer, and nothing listens on a port. |
 | 2026-11-08 | Only `--detach` commands are guaranteed to survive a lost connection, and nothing resumes after reboot | Transient units are not persistent. Data survives. See `doc/CLI.md`. |
 
 ---

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Measures software-rendered GUI sessions in a fresh VM. doc/GUI.md records the
+# results. Prints one table on standard output.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+guest=/opt/aos-tests/tests/gui/guest
+"$repo/tests/vm/deploy" >&2
+"$vm" ssh "sudo $guest/setup.sh" >&2
+"$vm" ssh "sudo agentos project run alpha -- bash $guest/benchmark.sh"
+"$vm" down

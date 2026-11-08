@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Runs the Phase 4 graphical test in a freshly reset VM.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+guest=/opt/aos-tests/tests/gui/guest
+step() { # <script>
+	echo "### $1"
+	"$vm" ssh "sudo $guest/$1.sh"
+}
+
+"$repo/tests/vm/deploy"
+step setup
+echo "### agent"
+"$vm" ssh "sudo agentos project run alpha -- bash $guest/agent.sh"
+echo "### browser"
+"$vm" ssh "sudo agentos project run alpha -- bash $guest/browser.sh"
+step isolation
+step view_ready
+
+echo "### remote viewing"
+python3 "$here/view_client.py" 255 0 0 "$vm" ssh 'sudo agentos project gui alpha view view'
+stranger=$(mktemp -d)
+trap 'rm -rf "$stranger"' EXIT
+ssh-keygen -q -t ed25519 -N '' -f "$stranger/key"
+if ssh -i "$stranger/key" -p 10022 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	-o LogLevel=ERROR admin@127.0.0.1 true 2>/dev/null; then
+	echo "FAIL: an unknown SSH key reached the viewer path" >&2
+	exit 1
+fi
+echo "ok: an unknown SSH key is refused"
+if [[ "$("$vm" ssh 'sudo agentos project gui beta view view' 2>&1 </dev/null || true)" != *"no running session"* ]]; then
+	echo "FAIL: another project reached the viewing session" >&2
+	exit 1
+fi
+echo "ok: another project has no such session"
+
+step cleanup
+"$vm" down
+echo "PASS: gui"

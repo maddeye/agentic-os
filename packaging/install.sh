@@ -10,6 +10,8 @@ id -u agentos-system >/dev/null 2>&1 || useradd --system --user-group --no-creat
 install -D -m 0755 "$repo/bin/agentos" /usr/local/sbin/agentos
 install -D -m 0644 "$repo/configs/systemd/native-restricted.properties" /usr/share/agent-os/native-restricted.properties
 install -D -m 0755 "$repo/bin/agentos-netns" /usr/local/sbin/agentos-netns
+install -D -m 0755 "$repo/bin/agentos-gui" /usr/local/bin/agentos-gui
+install -D -m 0644 "$repo/configs/gui/packages" /usr/share/agent-os/gui-packages
 install -D -m 0644 "$repo/configs/nftables/agentos.nft" /usr/share/agent-os/agentos.nft
 install -m 0755 "$repo/.build/bin/agentos-hostd" "$repo/.build/bin/agentos-hostctl" /usr/local/sbin/
 install -D -m 0644 "$repo/configs/toolchains/catalog.json" /usr/share/agent-os/toolchains.json
