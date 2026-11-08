@@ -99,7 +99,7 @@ The last line is `PASS: hostd`. The command needs internet access. It tests thes
 
 ## Run the suites in GitHub Actions
 
-`.github/workflows/tests.yml` runs on pushes to `main`, on pull requests, and on demand. Changes that touch only `doc/`, `assets/`, or `README.md` do not start it.
+`.github/workflows/tests.yml` runs only when you start it, because each run uses about 17 minutes of the private repository's Actions allowance. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.
 
 The `prepare` job fails if the runner has no `/dev/kvm`. It also runs the Rust unit tests. It builds the VM baseline and the two Docker images once, and stores them in the Actions cache. To rebuild them, change an input of the cache key in the workflow, such as `tests/vm/image.lock`.
 

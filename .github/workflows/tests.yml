@@ -1,12 +1,6 @@
 name: Tests
 
 on:
-  # Runs on main seed the VM cache, which GitHub shares with every pull request.
-  push:
-    branches: [main]
-    paths-ignore: ["doc/**", "assets/**", "README.md"]
-  pull_request:
-    paths-ignore: ["doc/**", "assets/**", "README.md"]
   workflow_dispatch:
 
 concurrency:
