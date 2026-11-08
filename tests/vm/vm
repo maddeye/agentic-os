@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Builds and drives the Debian test VM. See doc/TEST_PLAN.md.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+state="$repo/.vm"
+source "$here/image.lock"
+
+# .vm/cache holds the verified download. .vm/baseline is immutable after a
+# build. .vm/run holds the overlays that `reset` discards.
+key="$state/id_ed25519"
+disks=(root data)
+container=agentos-test-vm
+toolbox=agentos-vm-toolbox:$APT_SNAPSHOT
+ssh_port=10022
+
+in_toolbox() {
+	docker run --rm -i --user "$(id -u):$(id -g)" -v "$state:$state" -w "$state" "$toolbox" "$@"
+}
+
+running() {
+	[[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" == true ]]
+}
+
+guest() {
+	ssh -i "$key" -p "$ssh_port" -o BatchMode=yes -o ConnectTimeout=3 \
+		-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+		admin@127.0.0.1 "$@"
+}
+
+boot() { # <disk dir> [extra qemu args...]
+	local dir=$1 name drives=()
+	shift
+	for name in "${disks[@]}"; do
+		drives+=(-drive "if=none,id=$name,file=$dir/$name.qcow2,format=qcow2"
+			-device "virtio-blk-pci,drive=$name,serial=agentos-$name")
+	done
+	docker rm -f "$container" >/dev/null 2>&1 || true
+	docker run -d --name "$container" --device /dev/kvm --network host \
+		--user "$(id -u):$(id -g)" -v "$state:$state" "$toolbox" \
+		qemu-system-x86_64 -name agentos-test -machine q35,accel=kvm -cpu host -smp 4 -m 4G \
+		-display none -serial "file:$state/serial.log" \
+		-nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$ssh_port-:22" \
+		"${drives[@]}" "$@" >/dev/null
+	wait_for_ssh
+}
+
+wait_for_ssh() {
+	local _
+	for _ in $(seq 1 180); do
+		if ! running; then
+			docker logs "$container" >&2
+			echo "vm: QEMU exited during boot. See $state/serial.log" >&2
+			exit 1
+		fi
+		guest true </dev/null 2>/dev/null && return 0
+		sleep 1
+	done
+	echo "vm: SSH did not come up. See $state/serial.log" >&2
+	exit 1
+}
+
+cmd_down() {
+	if running; then
+		guest sudo poweroff 2>/dev/null || true
+		local _
+		for _ in $(seq 1 60); do
+			running || break
+			sleep 1
+		done
+		running && docker stop -t 5 "$container" >/dev/null
+	fi
+	docker rm -f "$container" >/dev/null 2>&1 || true
+}
+
+fetch_image() {
+	local image
+	image="$state/cache/$(basename "$IMAGE_URL")"
+	if [[ ! -f "$image" ]]; then
+		mkdir -p "$state/cache"
+		curl -fL --retry 3 -o "$image.part" "$IMAGE_URL"
+		mv "$image.part" "$image"
+	fi
+	echo "$IMAGE_SHA512  $image" | sha512sum -c --quiet >&2
+	echo "$image"
+}
+
+cmd_build() {
+	if [[ -d "$state/baseline" && "${1:-}" != --force ]]; then
+		echo "vm: baseline already built"
+		return
+	fi
+	cmd_down
+	mkdir -p "$state"
+	docker build -q --build-arg "APT_SNAPSHOT=$APT_SNAPSHOT" -t "$toolbox" "$here" >/dev/null
+	[[ -f "$key" ]] || ssh-keygen -q -t ed25519 -N '' -C agentos-test-vm -f "$key"
+	local image work="$state/baseline.tmp"
+	image="$(fetch_image)"
+	chmod -R u+w "$work" 2>/dev/null || true
+	rm -rf "$work"
+	mkdir -p "$work"
+	cp --reflink=auto "$image" "$work/root.qcow2"
+	in_toolbox qemu-img resize -q "$work/root.qcow2" 20G
+	in_toolbox qemu-img create -q -f qcow2 "$work/data.qcow2" 20G
+	sed -e "s|@SSH_KEY@|$(cat "$key.pub")|" -e "s|@APT_SNAPSHOT@|$APT_SNAPSHOT|" \
+		"$here/user-data.tmpl" > "$work/user-data"
+	printf 'instance-id: agentos-baseline\nlocal-hostname: agentos-test\n' > "$work/meta-data"
+	in_toolbox cloud-localds "$work/seed.iso" "$work/user-data" "$work/meta-data"
+	boot "$work" -drive "if=virtio,file=$work/seed.iso,format=raw,readonly=on"
+	guest cloud-init status --wait
+	guest 'dpkg-query -W -f "\${Package} \${Version}\n"' > "$work/packages.txt"
+	cmd_down
+	rm -f "$work/seed.iso" "$work/user-data" "$work/meta-data"
+	chmod -R a-w "$work"
+	chmod -R u+w "$state/baseline" 2>/dev/null || true
+	rm -rf "$state/baseline"
+	chmod u+w "$work"
+	mv "$work" "$state/baseline"
+	chmod a-w "$state/baseline"
+	cmd_reset
+	echo "vm: baseline ready"
+}
+
+cmd_reset() {
+	cmd_down
+	rm -rf "$state/run"
+	mkdir -p "$state/run"
+	local name
+	for name in "${disks[@]}"; do
+		in_toolbox qemu-img create -q -f qcow2 -F qcow2 \
+			-b "$state/baseline/$name.qcow2" "$state/run/$name.qcow2"
+	done
+}
+
+cmd_up() {
+	running && return 0
+	[[ -f "$state/run/root.qcow2" ]] || cmd_reset
+	boot "$state/run"
+}
+
+cmd_snapshot() {
+	local action=${1:-} label=${2:-} flag name
+	case "$action" in
+		save) flag=-c ;;
+		restore) flag=-a ;;
+		list) in_toolbox qemu-img snapshot -l "$state/run/root.qcow2"; return ;;
+		*) echo "usage: vm snapshot save|restore NAME, or vm snapshot list" >&2; exit 2 ;;
+	esac
+	[[ "$label" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "vm: invalid snapshot name" >&2; exit 2; }
+	# qcow2 internal snapshots are only consistent while QEMU has the disk closed.
+	cmd_down
+	for name in "${disks[@]}"; do
+		in_toolbox qemu-img snapshot "$flag" "$label" "$state/run/$name.qcow2"
+	done
+}
+
+case "${1:-}" in
+	build) shift; cmd_build "$@" ;;
+	up) cmd_up ;;
+	down) cmd_down ;;
+	reset) cmd_reset ;;
+	snapshot) shift; cmd_snapshot "$@" ;;
+	ssh) shift; cmd_up; guest "$@" ;;
+	*) echo "usage: vm build [--force]|up|down|reset|ssh [cmd]|snapshot ..." >&2; exit 2 ;;
+esac

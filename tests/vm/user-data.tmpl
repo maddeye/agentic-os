@@ -1,0 +1,48 @@
+#cloud-config
+hostname: agentos-test
+users:
+  - name: admin
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - @SSH_KEY@
+ssh_pwauth: false
+disable_root: true
+apt:
+  preserve_sources_list: true
+write_files:
+  - path: /etc/apt/sources.list.d/debian.sources
+    content: |
+      Types: deb
+      URIs: https://snapshot.debian.org/archive/debian/@APT_SNAPSHOT@/
+      Suites: trixie trixie-updates
+      Components: main
+      Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+      Check-Valid-Until: no
+
+      Types: deb
+      URIs: https://snapshot.debian.org/archive/debian-security/@APT_SNAPSHOT@/
+      Suites: trixie-security
+      Components: main
+      Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+      Check-Valid-Until: no
+  - path: /usr/local/sbin/agentos-baseline
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eux
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends btrfs-progs curl ca-certificates
+      mkfs.btrfs -L agentos-data /dev/disk/by-id/virtio-agentos-data
+      mkdir -p /var/lib/agent-os
+      echo 'LABEL=agentos-data /var/lib/agent-os btrfs noatime 0 0' >> /etc/fstab
+      mount /var/lib/agent-os
+      # Timers that start apt in the background make benchmarks noisy.
+      systemctl mask apt-daily.timer apt-daily-upgrade.timer
+      touch /etc/cloud/cloud-init.disabled
+      apt-get clean
+runcmd:
+  - [/usr/local/sbin/agentos-baseline]

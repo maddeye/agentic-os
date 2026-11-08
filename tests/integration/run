@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Runs the Phase 1 end-to-end test in a freshly reset VM.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+guest=/opt/aos-tests/tests/integration/guest
+
+step() { # <script> [args...]
+	echo "### $1"
+	"$vm" ssh "sudo $guest/$1.sh ${*:2}"
+}
+
+"$repo/tests/vm/deploy"
+step lifecycle
+step tools
+step limits
+
+echo "### ssh disconnect"
+# The client holds the session open after starting the command, then dies without a clean exit.
+ssh_opts=(-i "$repo/.vm/id_ed25519" -p 10022 -o BatchMode=yes -o StrictHostKeyChecking=no
+	-o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+id_file=$(mktemp)
+ssh "${ssh_opts[@]}" admin@127.0.0.1 \
+	"sudo agentos project run --detach alpha -- bash -c 'sleep 25; echo finished > after-disconnect'; exec sleep 600" \
+	> "$id_file" &
+client=$!
+for _ in $(seq 1 30); do [[ -s "$id_file" ]] && break; sleep 0.2; done
+kill -9 "$client"
+wait "$client" 2>/dev/null || true
+command_id=$(cat "$id_file")
+rm -f "$id_file"
+step disconnect "$command_id"
+
+echo "### reboot"
+"$vm" ssh 'sudo agentos project run --detach alpha -- sleep 600' >/dev/null
+"$vm" down
+"$vm" up
+step after_reboot
+
+step delete
+"$vm" down
+echo "PASS: integration"

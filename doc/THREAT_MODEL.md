@@ -1,0 +1,88 @@
+# Agent OS threat model
+
+Status: Phase 1, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
+
+Check names in this document are rows in [`tests/isolation/checks.tsv`](../tests/isolation/checks.tsv). The [isolation design](ISOLATION.md) explains the controls.
+
+## Protected assets
+
+| ID | Asset | Why it matters |
+|---|---|---|
+| A1 | Project workspace, home, cache, state, and artifacts | Source code and agent memory belong to one project. |
+| A2 | Project credentials: Git, registry, and API tokens | A leak acts with the project's external authority. |
+| A3 | GUI sockets, recordings, screenshots, and input traces | Captures can contain secrets typed on screen. |
+| A4 | Host configuration, boot files, and system services | A change here persists beyond any project. |
+| A5 | APT and dpkg state, and global toolchains | Every project executes this software. |
+| A6 | Administrator and system-agent credentials, and SSH host keys | These grant host control or impersonation. |
+| A7 | `/var/lib/agent-os/metadata` and managed snapshots | Tampering rewrites identity mappings or recovery data. |
+| A8 | Audit history | Without it, nobody can reconstruct a privileged change. |
+| A9 | Host availability, including the SSH management reserve | A runaway project can lock out the administrator. |
+
+## Attacker capabilities
+
+| ID | Attacker | Assumed capability |
+|---|---|---|
+| T1 | Compromised or misaligned project agent | Runs arbitrary code as its project UID, for as long as it wants. |
+| T2 | Malicious project dependency, for example an `npm` post-install script | The same capability as T1. |
+| T3 | Compromised system agent | Sends any request that its identity is allowed to send to `hostd`. It has no root shell. |
+| T4 | Malicious Debian or toolchain package approved by policy | Runs as root during installation. |
+| T5 | Network attacker | Reaches any port that the host exposes. |
+| T6 | Holder of a kernel exploit | Crosses every boundary in this document. |
+
+A prompt-injected agent is T1 or T3. The design does not try to detect injection. It limits what the affected identity can do.
+
+## Trust boundaries
+
+| ID | Boundary | Enforced by | Status |
+|---|---|---|---|
+| B1 | Project to project | Separate UIDs, mode `0700` directories, mount and IPC namespaces, `ProtectProc=invisible` | Tested, with two accepted gaps |
+| B2 | Project to host | No capabilities, no new privileges, read-only system paths, private `/run` | Tested |
+| B3 | Project to system agent | Separate UID, and `hostd` accepts peers by `SO_PEERCRED` | Design only, Phase 2 |
+| B4 | System agent to root | Typed `hostd` operations, policy, and audit | Design only, Phase 2 |
+| B5 | Network to host | OpenSSH keys over private networking | Design only, Phase 5 |
+| B6 | Project to kernel | Seccomp filter and hidden kernel interfaces reduce exposure only | Partial by design |
+
+## Threats and controls
+
+| Threat | Attacker | Assets | Control | Evidence |
+|---|---|---|---|---|
+| Read another project's files | T1, T2 | A1, A2 | B1 file modes | `home_read`, `workspace_read` |
+| Discover or reuse data in shared temporary storage | T1, T2 | A1, A2 | Per-project `/tmp`, per-unit `/dev/shm` | `tmp_cross`, `var_tmp_cross`, `dev_shm_cross` |
+| Read another project's IPC objects | T1, T2 | A1 | `PrivateIPC=yes` | `sysv_shm_cross`, `mqueue_cross` |
+| Inspect or signal another project's processes | T1, T2 | A1, A2 | `ProtectProc=invisible`, UID checks | `proc_visible`, `proc_cmdline`, `proc_environ`, `signal` |
+| Connect to another project's GUI socket | T1, T2 | A3 | Socket lives in a mode `0700` directory | `gui_socket` |
+| Modify host files or packages | T1, T2 | A4, A5 | `ProtectSystem=strict`, file modes | `etc_write`, `usr_write`, `boot_write`, `dpkg_db_write`, `apt_install`, `toolchain_write` |
+| Escalate through setuid, sudo, or D-Bus | T1, T2 | A4, A6 | `NoNewPrivileges=yes`, private `/run` | `setuid_binary`, `sudo`, `system_bus`, `capabilities`, `service_start` |
+| Trick root tooling with a swapped project path | T1, T2 | A4, A7 | Root owns each project directory | `replace_own_project_dir` |
+| Run the administrator CLI from a project | T1, T2 | A4, A7 | Root check, no setuid, no sudo | `agentos_cli` |
+| Inject through names or sizes given to the root CLI | T1, T2 through a relayed request | A4 | Strict patterns before any use | `tests/integration/guest/lifecycle.sh` |
+| Keep files or processes after delete, or redirect it with symlinks and subvolumes | T1, T2 | A1, A4 | Stop the slice, kill the UID, remove with no symlink following | `tests/integration/guest/delete.sh` |
+| Inherit another account by name collision | Administrator error | A4 | `create` refuses a user outside the project UID range | `tests/integration/guest/delete.sh` |
+| Read host credentials or metadata | T1, T2 | A6, A7 | File modes, `ProtectHome=yes`, masked `/var/lib/agent-os` | `shadow`, `ssh_host_key`, `admin_ssh_keys`, `metadata_read`, `snapshots_list` |
+| Change kernel state | T1, T2 | A4, A9 | `Protect*` settings, no capabilities | `dmesg`, `sysctl_write`, `cgroup_write`, `mount_tmpfs`, `block_device` |
+| Exhaust host memory or tasks | T1, T2 | A9 | Per-project slice limits | `memory_limit`, `tasks_limit` |
+
+## Accepted gaps
+
+Each gap stays open until a named later phase closes it. The suite marks the first three as `gap`, so it fails when the behavior changes.
+
+1. **Abstract Unix sockets are reachable across projects.** They belong to the network namespace, and projects share one. `abstract_socket` proves the access. Xvfb and other X11 servers listen on abstract sockets by default, so any Phase 4 X11 fallback must start with `-nolisten local` or a separate network namespace. `netns_closes_abstract` shows that a network namespace closes this gap.
+2. **Loopback ports are reachable across projects.** `loopback_tcp` proves the access. A project's development database on `127.0.0.1` is open to every other project. `netns_closes_loopback` shows that a network namespace closes this gap.
+3. **`/etc/passwd` reveals project names.** `passwd_project_names` proves the access. Project names must not contain secrets.
+4. **Network egress is unrestricted.** T1 can send any readable project data to the internet, and can reach the LAN and cloud metadata addresses. Per-project egress policy is future work.
+5. **User namespaces stay enabled.** `user_namespace` requires them, because Chromium and Electron sandboxes need them in Phase 4. They add kernel attack surface for T6.
+6. **The kernel is shared.** T6 defeats the design. Use the `vm` execution profile for workloads that warrant a separate kernel.
+7. **Same-project processes are not isolated from each other.** An agent can read every credential that its project holds. A secret delivered to a project is visible to all of that project's code.
+8. **Package installation scripts run as root.** T4 has full control during installation. Policy and approval in Phase 2 reduce the chance of T4, and they do not contain it.
+9. **A project can fill the shared Btrfs filesystem.** No quota exists until Phase 3. This stops every other project from writing.
+10. **A project can create its own Btrfs subvolumes.** They fall outside parent snapshots, so Phase 3 must decide how to handle them.
+11. **Project output can contain terminal escape sequences.** `run`, `shell`, and `logs` pass the output to the administrator's terminal unfiltered.
+12. **Project output goes to the host journal.** journald's size limits apply, and the journal keeps secrets that a project prints. A project can also push out older host log entries.
+
+## Rules for later phases
+
+- `hostd` listens only on a Unix socket, because every project shares the loopback interface.
+- Root-run tooling must not open a project path through a systemd `StandardOutput=file:` setting. PID 1 would follow a symlink that the project planted.
+- Host services must not trust a connection because it came from `127.0.0.1`.
+- Root-run tooling must not follow symlinks inside a project directory.
+- Bind any GUI viewer to a project-private socket, never to a host port by default.
