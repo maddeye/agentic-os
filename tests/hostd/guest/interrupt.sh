@@ -28,6 +28,9 @@ eq "package is left unfinished" False "$(hostctl_ status | field dpkg_consistent
 eq "change is left applying" applying "$(hostctl_ change show "$id" | field state)"
 eq "status reports the interrupted change" "[$id]" "$(hostctl_ status | field applying)"
 
+eq "no repair is recorded before recovery runs" 0 "$(audited recovery_started "\"change\":$id")"
+# A broken package that apt would fix by installing something never approved.
+dpkg --force-depends -i /opt/aos-test-repo/old/aos-test-broken_1.0_all.deb >/dev/null 2>&1
 rm /run/aos-test-hang
 recovered=$(hostctl_ recover)
 eq "recover reports the change" "[$id]" "$(field recovered <<<"$recovered")"
@@ -36,6 +39,10 @@ result=$(hostctl_ change show "$id")
 eq "transaction rolls forward" applied "$(field state <<<"$result")"
 eq "outcome records the recovery" True "$(field outcome.recovered <<<"$result")"
 eq "recovery is audited" 1 "$(audited recovery "\"change\":$id")"
+eq "the start of recovery is audited" 1 "$(audited recovery_started "\"change\":$id")"
+eq "recovery installs nothing unapproved" 1 "$(status_of installed hello)"
+eq "the outcome says what recovery skipped" 1 "$(field outcome.detail <<<"$result" | grep -c 'skipped')"
+dpkg --purge aos-test-broken >/dev/null 2>&1
 installed aos-test-hang; eq "package is installed" 0 $?
 eq "apt works after recovery" 0 "$(status_of apt-get -s install hello)"
 
@@ -70,7 +77,7 @@ hostctl_ recover >/dev/null
 eq "killed install ends as failed" failed "$(hostctl_ change show "$id" | field state)"
 eq "staging is cleaned" "" "$(ls -A "$root/.staging")"
 
-# A concurrent request waits for the running transaction, and cannot overlap it.
+# A concurrent change is refused, so it cannot overlap or hold a connection slot.
 touch /run/aos-test-hang
 dpkg --purge aos-test-hang >/dev/null
 plan 3 package install aos-test-hang
@@ -79,13 +86,11 @@ agentos system change approve "$id" >/dev/null
 hostctl_ change apply "$id" >/dev/null 2>&1 &
 client=$!
 wait_for hanging
-hostctl_ recover >/dev/null 2>&1 &
-second=$!
-sleep 3
+eq "a concurrent change is refused as busy" 1 "$(hostctl_ recover 2>&1 | grep -c '^agentos: busy')"
 eq "live transaction is not treated as interrupted" applying "$(hostctl_ change show "$id" | field state)"
 hanging; eq "live transaction keeps running" 0 $?
 rm /run/aos-test-hang
-wait "$client" "$second" 2>/dev/null
+wait "$client" 2>/dev/null
 eq "transaction finishes normally" applied "$(hostctl_ change show "$id" | field state)"
 eq "it was not marked as recovered" False "$(hostctl_ change show "$id" | field outcome.recovered)"
 

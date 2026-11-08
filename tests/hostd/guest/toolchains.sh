@@ -69,4 +69,14 @@ eq "other version is untouched" v26.13.0 "$(agentos project run alpha -- node --
 eq "a project on a removed toolchain gets an error" 2 "$(status_of agentos project run beta -- true)"
 agentos project toolchain beta node --clear
 eq "clearing restores the project" 0 "$(status_of agentos project run beta -- true)"
+
+# Approval covers the catalog entry that the administrator saw.
+plan 3 toolchain install node 24.22.2
+id=$(field id <<<"$change")
+agentos system change approve "$id" >/dev/null
+cp "$catalog" "$catalog.saved"
+sed -i '0,/"sha256": "[0-9a-f]*"/s//"sha256": "'"$(printf '1%.0s' {1..64})"'"/' "$catalog"
+eq "a changed catalog entry is refused" 1 "$(status_of hostctl_ change apply "$id")"
+eq "a changed catalog entry makes the change stale" stale "$(hostctl_ change show "$id" | field state)"
+mv "$catalog.saved" "$catalog"
 finish

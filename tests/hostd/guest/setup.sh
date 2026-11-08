@@ -9,32 +9,8 @@ echo private-to-alpha > "$projects/alpha/home/secret"
 chown aos-alpha:aos-alpha "$projects/alpha/home/secret"
 chmod 600 "$projects/alpha/home/secret"
 
-repo=/opt/aos-test-repo
+source "$(dirname "$0")/debs.sh"
 mkdir -p "$repo"
-build_deb() { # <name> <postinst body> [path to create in the package]...
-	local name=$1 body=$2 work
-	shift 2
-	work=$(mktemp -d)
-	mkdir -p "$work/DEBIAN" "$work/usr/share/$name"
-	echo payload > "$work/usr/share/$name/file"
-	cat > "$work/DEBIAN/control" <<CONTROL
-Package: $name
-Version: 1.0
-Architecture: all
-Maintainer: Agent OS tests <tests@agent-os.invalid>
-Description: hostd test package
-CONTROL
-	printf '#!/bin/sh\n%s\nexit 0\n' "$body" > "$work/DEBIAN/postinst"
-	chmod 755 "$work/DEBIAN/postinst"
-	local extra
-	for extra in "$@"; do
-		mkdir -p "$work/$(dirname "$extra")"
-		echo '[Service]' > "$work/$extra"
-	done
-	[[ "$name" != aos-test-setuid ]] || install -m 4755 /usr/bin/true "$work/usr/share/$name/helper"
-	dpkg-deb --root-owner-group -b "$work" "$repo/${name}_1.0_all.deb" >/dev/null
-	rm -rf "$work"
-}
 build_deb aos-test-hang 'while [ -e /run/aos-test-hang ]; do sleep 0.2; done'
 build_deb aos-test-power 'while [ -e /run/aos-test-power ]; do sleep 0.2; done'
 build_deb aos-test-service ':' usr/lib/systemd/system/aos-test-svc.service
@@ -42,9 +18,13 @@ build_deb aos-test-setuid ':'
 build_deb aos-test-fails 'exit 7'
 build_deb aos-test-clean ':'
 
-: > "$repo/Packages"
-for deb in "$repo"/*.deb; do
-	dpkg-deb -f "$deb" >> "$repo/Packages"
-	printf 'Filename: ./%s\nSize: %s\nSHA256: %s\n\n' "$(basename "$deb")" "$(stat -c %s "$deb")" "$(sha256sum "$deb" | cut -d' ' -f1)" >> "$repo/Packages"
-done
+build_deb aos-test-path ':' usr/lib/systemd/system/aos-test-x.path
+build_deb aos-test-pinned ':'
+build_deb aos-test-tamper ':'
+# Version 2 cannot unpack, so the upgrade fails and version 1 stays installed.
+DEB_DIR=$repo/old build_deb aos-test-upgrade ':'
+DEB_VERSION=2.0 DEB_PREINST='exit 1' build_deb aos-test-upgrade ':'
+dpkg -i "$repo/old/aos-test-upgrade_1.0_all.deb" >/dev/null
+DEB_DIR=$repo/old DEB_DEPENDS=hello build_deb aos-test-broken ':'
+index_repo
 echo "deb [trusted=yes] copy:$repo ./" > /etc/apt/sources.list.d/aos-test.list

@@ -3,14 +3,16 @@
 use crate::protocol::{Change, Refusal};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const ROOT: &str = "/var/lib/agent-os/metadata/hostd";
 const HISTORY_EVENTS: usize = 200;
+const HISTORY_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 pub struct Store {
     root: PathBuf,
@@ -43,6 +45,20 @@ fn format_utc(seconds: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rest / 3600, rest / 60 % 60, rest % 60)
 }
 
+/// Returns whole lines from the last `limit` bytes, however large the file is.
+fn read_tail(path: &Path, limit: u64) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let start = file.metadata()?.len().saturating_sub(limit);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes)?;
+    if start > 0 {
+        let first_line = bytes.iter().position(|byte| *byte == b'\n').map_or(bytes.len(), |end| end + 1);
+        bytes.drain(..first_line);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 impl Default for Store {
     fn default() -> Self {
         Store { root: PathBuf::from(ROOT) }
@@ -60,9 +76,18 @@ impl Store {
 
     pub fn lock(&self) -> Result<Lock, Refusal> {
         let file = OpenOptions::new().create(true).write(true).truncate(false).mode(0o600).open(self.root.join("lock"))?;
+        // A waiter would hold a connection slot for the whole running transaction.
+        let deadline = Instant::now() + LOCK_WAIT;
         // SAFETY: flock only reads the descriptor, which `file` keeps open.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
+        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EWOULDBLOCK) {
+                return Err(error.into());
+            }
+            if Instant::now() >= deadline {
+                return Err(Refusal::new("busy", "another change is running. Try again later."));
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         Ok(Lock { _file: file })
     }
@@ -126,7 +151,7 @@ impl Store {
     }
 
     pub fn history(&self) -> Result<Vec<Value>, Refusal> {
-        let text = match fs::read_to_string(self.root.join("audit.jsonl")) {
+        let text = match read_tail(&self.root.join("audit.jsonl"), HISTORY_TAIL_BYTES) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => return Err(error.into()),
@@ -139,7 +164,16 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::format_utc;
+    use super::{format_utc, read_tail};
+
+    #[test]
+    fn history_reads_only_whole_lines_from_the_tail() {
+        let path = std::env::temp_dir().join(format!("hostd-tail-{}", std::process::id()));
+        std::fs::write(&path, "first line\nsecond\nthird\n").unwrap();
+        assert_eq!(read_tail(&path, 13).unwrap(), "third\n");
+        assert_eq!(read_tail(&path, 1000).unwrap(), "first line\nsecond\nthird\n");
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn formats_utc_across_calendar_edges() {

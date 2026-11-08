@@ -49,6 +49,7 @@ replace_own_project_dir	3	root	blocked	blocked	mv $ALPHA_ROOT/workspace $ALPHA_R
 
 # Host-maintenance broker
 hostd_socket	3	root	blocked	blocked	$CONNECT unix /run/agentos/hostd.sock
+hostd_admin_socket	3	root	blocked	blocked	$CONNECT unix /run/agentos/hostd-admin.sock
 hostd_client	3	root	blocked	blocked	/usr/local/sbin/agentos system status
 hostd_state_read	3	root	blocked	blocked	cd /var/lib/agent-os/metadata/hostd
 hostd_policy_write	2	root	blocked	blocked	touch /etc/agent-os/hostd-policy.json

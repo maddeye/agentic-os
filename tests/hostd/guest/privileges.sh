@@ -26,13 +26,37 @@ done
 before=$(audited malformed_request '"result":"malformed"')
 sys python3 -c 'import socket; s = socket.socket(socket.AF_UNIX); s.connect("/run/agentos/hostd.sock"); s.sendall(b"x" * 70000 + b"\n"); s.recv(100)' 2>/dev/null
 eq "oversized request is rejected" 1 "$(( $(audited malformed_request '"result":"malformed"') == before + 1 ))"
-eq "silent client times out without blocking others" True "$(sys python3 - <<'PY'
-import socket, subprocess, json
+# One time limit covers the whole request, however slowly its bytes arrive.
+elapsed=$(sys python3 - <<'PY'
+import select, socket, time
 s = socket.socket(socket.AF_UNIX); s.connect("/run/agentos/hostd.sock")
-out = subprocess.run(["/usr/local/sbin/agentos-hostctl", "status"], capture_output=True, timeout=30).stdout
-print(json.loads(out)["dpkg_consistent"])
+start = time.monotonic()
+try:
+    while time.monotonic() - start < 30 and not select.select([s], [], [], 2)[0]:
+        s.sendall(b"x")
+except OSError:
+    pass
+print(int(time.monotonic() - start))
 PY
-)"
+)
+between "a drip-feeding client is cut off" 8 13 "$elapsed"
+
+# The system agent can fill its own socket, and the administrator's stays free.
+sys python3 - <<'PY' &
+import socket, time
+held = [socket.socket(socket.AF_UNIX) for _ in range(16)]
+for s in held:
+    s.connect("/run/agentos/hostd.sock")
+    s.sendall(b"x")
+time.sleep(9)
+PY
+holder=$!
+sleep 1
+eq "16 held connections fill the system agent socket" 1 "$(status_of hostctl_ status)"
+eq "the administrator still gets through" 0 "$(status_of timeout 3 agentos system status)"
+wait "$holder"
+sleep 3
+eq "the system agent gets back in once they close" 0 "$(status_of hostctl_ status)"
 
 # The system agent has no route to root or to project data.
 eq "system agent has no sudo" 1 "$(status_of sys sudo -n true)"

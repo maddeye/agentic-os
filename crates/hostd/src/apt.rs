@@ -1,12 +1,23 @@
 //! Plans and applies Debian package changes through apt.
 
-use crate::exec::{require, run, tool};
-use crate::protocol::{Action, ActionKind, Impact, Operation, Refusal};
+use crate::exec::{require, run, tool, Ran};
+use crate::protocol::{Action, ActionKind, Artifact, Impact, Operation, Refusal};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const ARCHIVES: &str = "/var/cache/apt/archives";
+const ARTIFACTS: &str = "/var/lib/agent-os/metadata/hostd/artifacts";
+/// Files that run with privilege or start on their own once installed.
+const AUTOSTART_DIRS: [&str; 7] = [
+    "/systemd/system/",
+    "/systemd/user/",
+    "/systemd/system-generators/",
+    "/systemd/user-generators/",
+    "/systemd/system-shutdown/",
+    "/systemd/system-sleep/",
+    "/etc/init.d/",
+];
 
 fn apt_get() -> Command {
     let mut command = tool("apt-get");
@@ -22,12 +33,67 @@ fn apt_get() -> Command {
 /// Installing never removes a package. A removal must be requested as one.
 const INSTALL_FLAGS: [&str; 2] = ["--no-install-recommends", "--no-remove"];
 
-fn with_operation<'a>(command: &'a mut Command, operation: &Operation) -> &'a mut Command {
+/// With `files`, apt installs those exact archives instead of resolving names.
+fn with_operation<'a>(command: &'a mut Command, operation: &Operation, files: &[PathBuf]) -> &'a mut Command {
     match operation {
+        Operation::PackageInstall { .. } if !files.is_empty() => command.args(INSTALL_FLAGS).arg("install").args(files),
         Operation::PackageInstall { names } => command.args(INSTALL_FLAGS).arg("install").args(names),
         Operation::PackageRemove { names } => command.arg("remove").args(names),
         _ => unreachable!("apt receives only package operations"),
     }
+}
+
+fn artifact_dir(id: u64) -> PathBuf {
+    Path::new(ARTIFACTS).join(id.to_string())
+}
+
+fn artifact_paths(id: u64, impact: &Impact) -> Vec<PathBuf> {
+    impact.artifacts.iter().map(|artifact| artifact_dir(id).join(&artifact.file)).collect()
+}
+
+pub fn discard_artifacts(id: u64) {
+    let _ = fs::remove_dir_all(artifact_dir(id));
+}
+
+fn sha256(path: &Path) -> Result<String, Refusal> {
+    let ran = require(tool("sha256sum").arg(path), "plan_failed", "package hash")?;
+    Ok(ran.stdout.split_whitespace().next().unwrap_or_default().to_string())
+}
+
+/// The cache file names for an action. A bare target is native or `all`, and
+/// any other architecture appears in the target, so a foreign file cannot match.
+pub fn archive_candidates(action: &Action, native: &str) -> Vec<String> {
+    let (name, architecture) = match action.target.split_once(':') {
+        Some((name, architecture)) => (name, Some(architecture)),
+        None => (action.target.as_str(), None),
+    };
+    let version = action.to.as_deref().unwrap_or_default().replace(':', "%3a");
+    match architecture {
+        Some(architecture) => vec![format!("{name}_{version}_{architecture}.deb")],
+        None => vec![format!("{name}_{version}_{native}.deb"), format!("{name}_{version}_all.deb")],
+    }
+}
+
+fn control_field(control: &str, field: &str) -> String {
+    let prefix = format!("{field}: ");
+    control.lines().find_map(|line| line.strip_prefix(&prefix)).unwrap_or_default().to_string()
+}
+
+/// Copies an action's archive out of the shared cache, so that what the plan
+/// scans and hashes is the file that apply installs.
+fn keep_artifact(id: u64, action: &Action, native: &str) -> Result<Artifact, Refusal> {
+    let file = archive_candidates(action, native)
+        .into_iter()
+        .find(|file| Path::new(ARCHIVES).join(file).is_file())
+        .ok_or_else(|| Refusal::new("plan_failed", format!("no downloaded archive for {}", action.target)))?;
+    let kept = artifact_dir(id).join(&file);
+    fs::copy(Path::new(ARCHIVES).join(&file), &kept)?;
+    let control = require(tool("dpkg-deb").arg("-f").arg(&kept), "plan_failed", "package control data")?.stdout;
+    let (name, version) = (control_field(&control, "Package"), control_field(&control, "Version"));
+    if action.target.split(':').next() != Some(name.as_str()) || action.to.as_deref() != Some(version.as_str()) {
+        return Err(Refusal::new("plan_failed", format!("{file} does not contain {}", action.target)));
+    }
+    Ok(Artifact { name, version, architecture: control_field(&control, "Architecture"), file, sha256: sha256(&kept)? })
 }
 
 fn parse_line(line: &str) -> Option<Action> {
@@ -63,7 +129,7 @@ pub fn scan_listing(listing: &str) -> (Vec<String>, Vec<String>) {
         if matches!(mode.as_bytes().get(3), Some(b's' | b'S')) || matches!(mode.as_bytes().get(6), Some(b's' | b'S')) {
             setuid.push(path.to_string());
         }
-        if path.contains("/systemd/system/") && [".service", ".socket", ".timer"].iter().any(|s| path.ends_with(s)) {
+        if !mode.starts_with('d') && AUTOSTART_DIRS.iter().any(|dir| path.contains(dir)) {
             units.push(path.to_string());
         }
     }
@@ -80,6 +146,12 @@ fn is_installed(name: &str) -> bool {
     package_status(name) == "ii "
 }
 
+fn installed_version(name: &str) -> String {
+    let mut command = tool("dpkg-query");
+    command.args(["-W", "-f=${Version}", name]);
+    run(&mut command).map(|ran| ran.stdout).unwrap_or_default()
+}
+
 fn is_essential(name: &str) -> bool {
     let mut command = tool("dpkg-query");
     command.args(["-W", "-f=${Essential}", name]);
@@ -92,10 +164,10 @@ pub fn dpkg_consistent() -> bool {
     run(&mut command).is_ok_and(|ran| ran.success && ran.stdout.trim().is_empty())
 }
 
-pub fn simulate(operation: &Operation) -> Result<Vec<Action>, Refusal> {
+fn simulate(operation: &Operation, files: &[PathBuf]) -> Result<Vec<Action>, Refusal> {
     let mut command = apt_get();
     command.arg("-s");
-    with_operation(&mut command, operation);
+    with_operation(&mut command, operation, files);
     Ok(parse_simulation(&require(&mut command, "plan_failed", "apt simulation")?.stdout))
 }
 
@@ -116,23 +188,9 @@ fn check_names_resolved(operation: &Operation, actions: &[Action]) -> Result<(),
     }
 }
 
-fn downloaded_file(action: &Action) -> Result<PathBuf, Refusal> {
-    let name = action.target.split(':').next().unwrap_or(&action.target);
-    let version = action.to.as_deref().unwrap_or_default().replace(':', "%3a");
-    let prefix = format!("{name}_{version}_");
-    for entry in fs::read_dir(ARCHIVES)? {
-        let path = entry?.path();
-        let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-        if file.starts_with(&prefix) && file.ends_with(".deb") {
-            return Ok(path);
-        }
-    }
-    Err(Refusal::new("plan_failed", format!("no downloaded archive for {name}")))
-}
-
-pub fn plan(operation: &Operation) -> Result<Impact, Refusal> {
+pub fn plan(id: u64, operation: &Operation) -> Result<Impact, Refusal> {
     require(apt_get().arg("update"), "plan_failed", "apt-get update")?;
-    let actions = simulate(operation)?;
+    let actions = simulate(operation, &[])?;
     check_names_resolved(operation, &actions)?;
     if let Some(action) = actions.iter().find(|a| a.kind == ActionKind::Remove && is_essential(&a.target)) {
         return Err(Refusal::new("denied", format!("{} is an essential package", action.target)));
@@ -142,34 +200,65 @@ pub fn plan(operation: &Operation) -> Result<Impact, Refusal> {
     if matches!(operation, Operation::PackageInstall { .. }) {
         let mut download = apt_get();
         download.args(["-y", "-d"]);
-        with_operation(&mut download, operation);
+        with_operation(&mut download, operation, &[]);
         require(&mut download, "plan_failed", "package download")?;
-        // Listing a .deb reads its archive and runs none of its scripts.
-        for action in impact.actions.iter().filter(|a| a.kind != ActionKind::Remove) {
-            let file = downloaded_file(action)?;
+        fs::create_dir_all(artifact_dir(id))?;
+        let native = require(tool("dpkg").arg("--print-architecture"), "plan_failed", "architecture")?.stdout;
+        let packages: Vec<Action> = impact.actions.iter().filter(|a| a.kind != ActionKind::Remove).cloned().collect();
+        for action in &packages {
+            let artifact = keep_artifact(id, action, native.trim())?;
+            let file = artifact_dir(id).join(&artifact.file);
             impact.download_bytes += fs::metadata(&file)?.len();
+            // Listing a .deb reads its archive and runs none of its scripts.
             let listing = require(tool("dpkg-deb").arg("--contents").arg(&file), "plan_failed", "package listing")?;
             let (units, setuid) = scan_listing(&listing.stdout);
             impact.services.extend(units);
             impact.setuid_files.extend(setuid);
+            impact.artifacts.push(artifact);
         }
     }
     Ok(impact)
 }
 
-pub fn apply(operation: &Operation) -> Result<(), String> {
-    let mut command = apt_get();
-    command.arg("-y");
-    with_operation(&mut command, operation);
-    let ran = run(&mut command).map_err(|error| error.to_string())?;
-    if ran.success {
-        Ok(())
-    } else {
-        Err(ran.tail())
+/// True while the kept files are unchanged and apt still resolves them to the
+/// approved transaction.
+pub fn still_matches(id: u64, operation: &Operation, impact: &Impact) -> Result<bool, Refusal> {
+    let files = artifact_paths(id, impact);
+    for (artifact, file) in impact.artifacts.iter().zip(&files) {
+        if sha256(file)? != artifact.sha256 {
+            return Ok(false);
+        }
     }
+    Ok(simulate(operation, &files)? == impact.actions)
 }
 
-pub fn verify(operation: &Operation) -> (bool, String) {
+pub fn apply(id: u64, operation: &Operation, impact: &Impact) -> Result<(), String> {
+    if impact.actions.is_empty() {
+        return Ok(());
+    }
+    let files = artifact_paths(id, impact);
+    let mut command = apt_get();
+    command.arg("-y");
+    // Anything apt wants beyond the kept files was not approved.
+    if !files.is_empty() {
+        command.arg("--no-download");
+    }
+    with_operation(&mut command, operation, &files);
+    let ran = run(&mut command).map_err(|error| error.to_string())?;
+    if !ran.success {
+        return Err(ran.tail());
+    }
+    // apt marks every file argument as manually installed.
+    if let Operation::PackageInstall { names } = operation {
+        let dependencies = impact.actions.iter().filter(|a| a.kind == ActionKind::Install && !names.contains(&a.target));
+        let mut mark = tool("apt-mark");
+        mark.arg("auto").args(dependencies.map(|a| a.target.as_str()));
+        let _ = run(&mut mark);
+    }
+    Ok(())
+}
+
+pub fn verify(operation: &Operation, actions: &[Action]) -> (bool, String) {
     let (names, want_installed) = match operation {
         Operation::PackageInstall { names } => (names, true),
         Operation::PackageRemove { names } => (names, false),
@@ -178,26 +267,44 @@ pub fn verify(operation: &Operation) -> (bool, String) {
     if !dpkg_consistent() {
         return (false, "dpkg --audit reports unfinished packages".to_string());
     }
-    match names.iter().find(|name| is_installed(name) != want_installed) {
-        Some(name) if want_installed => (false, format!("{name} is not installed")),
-        Some(name) => (false, format!("{name} is still installed")),
-        None => (true, "dpkg state matches the request".to_string()),
+    if let Some(name) = names.iter().find(|name| is_installed(name) != want_installed) {
+        let state = if want_installed { "is not installed" } else { "is still installed" };
+        return (false, format!("{name} {state}"));
+    }
+    for action in actions {
+        let current = if is_installed(&action.target) { Some(installed_version(&action.target)) } else { None };
+        if current != action.to {
+            return (false, format!("{} is at {current:?}, expected {:?}", action.target, action.to));
+        }
+    }
+    (true, "dpkg state matches the approved transaction".to_string())
+}
+
+fn describe(label: &str, result: std::io::Result<Ran>) -> String {
+    match result {
+        Ok(ran) if ran.success => format!("{label}: ok. "),
+        Ok(ran) => format!("{label}: {}. ", ran.tail()),
+        Err(error) => format!("{label}: {error}. "),
     }
 }
 
-/// Finishes what an interrupted dpkg left behind. Removes nothing.
-pub fn repair() -> String {
-    let mut steps = String::new();
+/// Finishes what an interrupted dpkg left behind. It removes nothing, downloads
+/// nothing, and refuses to touch a package outside the approved transaction.
+pub fn repair(approved: &[Action]) -> String {
     let mut configure = tool("dpkg");
     configure.args(["--force-confdef", "--force-confold", "--configure", "-a"]);
-    let mut fix = apt_get();
-    fix.args(["-y", "-f", "--no-remove", "install"]);
-    for (label, command) in [("dpkg --configure -a", &mut configure), ("apt-get -f install", &mut fix)] {
-        match run(command) {
-            Ok(ran) if ran.success => steps.push_str(&format!("{label}: ok. ")),
-            Ok(ran) => steps.push_str(&format!("{label}: {}. ", ran.tail())),
-            Err(error) => steps.push_str(&format!("{label}: {error}. ")),
-        }
+    let mut steps = describe("dpkg --configure -a", run(&mut configure));
+
+    let mut probe = apt_get();
+    probe.args(["-s", "-f", "--no-remove", "install"]);
+    let wanted = run(&mut probe).map(|ran| parse_simulation(&ran.stdout)).unwrap_or_default();
+    let outside = wanted.iter().find(|w| !approved.iter().any(|a| a.target == w.target && a.to == w.to));
+    if let Some(action) = outside {
+        steps.push_str(&format!("apt-get -f install: skipped, it would also change {}.", action.target));
+    } else if !wanted.is_empty() {
+        let mut fix = apt_get();
+        fix.args(["-y", "-f", "--no-remove", "--no-download", "install"]);
+        steps.push_str(&describe("apt-get -f install", run(&mut fix)));
     }
     steps.trim().to_string()
 }
@@ -224,6 +331,14 @@ mod tests {
     }
 
     #[test]
+    fn archive_lookup_never_matches_a_foreign_architecture() {
+        let action = |target: &str, to: &str| Action { kind: ActionKind::Install, target: target.into(), from: None, to: Some(to.into()) };
+        assert_eq!(archive_candidates(&action("foo", "1.0"), "amd64"), ["foo_1.0_amd64.deb", "foo_1.0_all.deb"]);
+        assert_eq!(archive_candidates(&action("foo:i386", "1.0"), "amd64"), ["foo_1.0_i386.deb"]);
+        assert_eq!(archive_candidates(&action("foo", "2:1.0"), "amd64")[0], "foo_2%3a1.0_amd64.deb");
+    }
+
+    #[test]
     fn scan_finds_system_units_and_setuid_files() {
         let listing = "drwxr-xr-x root/root 0 2026-01-01 00:00 ./usr/\n\
             -rwsr-xr-x root/root 10 2026-01-01 00:00 ./usr/bin/helper\n\
@@ -231,9 +346,25 @@ mod tests {
             -rw-r--r-- root/root 10 2026-01-01 00:00 ./usr/lib/systemd/system/x.service\n\
             lrwxrwxrwx root/root 0 2026-01-01 00:00 ./lib/systemd/system/y.timer -> x\n\
             -rw-r--r-- root/root 10 2026-01-01 00:00 ./usr/lib/systemd/user/z.service\n\
+            -rw-r--r-- root/root 10 2026-01-01 00:00 ./usr/lib/systemd/system/p.path\n\
+            -rw-r--r-- root/root 10 2026-01-01 00:00 ./usr/lib/systemd/system/m.mount\n\
+            -rwxr-xr-x root/root 10 2026-01-01 00:00 ./usr/lib/systemd/system-generators/g\n\
+            -rwxr-xr-x root/root 10 2026-01-01 00:00 ./etc/init.d/legacy\n\
+            drwxr-xr-x root/root 0 2026-01-01 00:00 ./usr/lib/systemd/system/\n\
             -rwxr-xr-x root/root 10 2026-01-01 00:00 ./usr/bin/plain\n";
         let (units, setuid) = scan_listing(listing);
-        assert_eq!(units, ["/usr/lib/systemd/system/x.service", "/lib/systemd/system/y.timer"]);
+        assert_eq!(
+            units,
+            [
+                "/usr/lib/systemd/system/x.service",
+                "/lib/systemd/system/y.timer",
+                "/usr/lib/systemd/user/z.service",
+                "/usr/lib/systemd/system/p.path",
+                "/usr/lib/systemd/system/m.mount",
+                "/usr/lib/systemd/system-generators/g",
+                "/etc/init.d/legacy",
+            ]
+        );
         assert_eq!(setuid, ["/usr/bin/helper", "/usr/bin/mailer"]);
     }
 }

@@ -1,6 +1,6 @@
 //! Client for `agentos system`. It holds no privilege. hostd decides everything.
 
-use hostd::protocol::{Level, Operation, Request, Response, State, SOCKET};
+use hostd::protocol::{Level, Operation, Request, Response, State, ADMIN_SOCKET, SOCKET};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -19,7 +19,9 @@ const USAGE: &str = "usage: agentos system status
        agentos system change history";
 
 fn send(request: &Request) -> Result<Value, String> {
-    let mut stream = UnixStream::connect(SOCKET).map_err(|error| format!("{SOCKET}: {error}"))?;
+    // SAFETY: geteuid has no preconditions.
+    let socket = if unsafe { libc::geteuid() } == 0 { ADMIN_SOCKET } else { SOCKET };
+    let mut stream = UnixStream::connect(socket).map_err(|error| format!("{socket}: {error}"))?;
     let mut body = serde_json::to_vec(request).map_err(|error| error.to_string())?;
     body.push(b'\n');
     stream.write_all(&body).map_err(|error| error.to_string())?;

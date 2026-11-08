@@ -90,8 +90,8 @@ tests/hostd/run
 The last line is `PASS: hostd`. The command needs internet access. It tests these behaviors:
 
 - The exit criterion: the system agent requests `ripgrep`, an administrator approves, and both projects run it.
-- Self-approval, stale plans, rejected changes, policy limits, and hostile package names.
-- Socket access, forged identity, malformed input, and what the system agent cannot do.
+- Self-approval, stale plans, republished and tampered archives, failed upgrades, rejected changes, policy limits, and hostile package names.
+- Socket access, forged identity, malformed input, slow clients, full connection slots, and what the system agent cannot do.
 - Two global Node.js versions selected per project, read-only access, bad digests, and failed checks.
 - A broker killed during a package script and during a toolchain install, a concurrent request, and a power cut.
 

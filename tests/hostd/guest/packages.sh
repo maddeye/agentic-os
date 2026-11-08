@@ -32,6 +32,11 @@ eq "plan is audited with caller" 1 "$(audited planned '"name":"agentos-system"' 
 eq "plan is audited with the decision" 1 "$(grep '"event":"planned"' "$audit" | head -1 | grep -c '"level":"approval_required"')"
 eq "approval is audited with the administrator" 1 "$(grep '"event":"approved"' "$audit" | head -1 | grep -c '"uid":0')"
 eq "result is audited" 1 "$(grep '"event":"finished"' "$audit" | head -1 | grep -c '"verified":true')"
+eq "each step is recorded in order" "planning planned apply_refused approved applying finished apply_refused" "$(python3 - "$audit" <<'PY'
+import json, sys
+print(" ".join(e["event"] for e in map(json.loads, open(sys.argv[1])) if e.get("change") == 1))
+PY
+)"
 eq "audit is root-only" 600 "$(stat -c %a "$audit")"
 eq "history is readable through hostd" 1 "$(( $(hostctl_ change history | field 0.time | wc -l) ))"
 
@@ -52,14 +57,40 @@ eq "changed transaction is refused" 1 "$(status_of hostctl_ change apply "$id")"
 eq "the change is marked stale" stale "$(hostctl_ change show "$id" | field state)"
 ! installed jq; eq "stale change installs nothing" 0 $?
 
+# Approval pins the archive. A repository can republish the same version.
+source "$(dirname "$0")/debs.sh"
+plan 3 package install aos-test-pinned
+id=$(field id <<<"$change")
+eq "plan records the archive hash" 64 "$(field impact.artifacts.0.sha256 <<<"$change" | tr -d '\n' | wc -c)"
+agentos system change approve "$id" >/dev/null
+DEB_PAYLOAD=swapped build_deb aos-test-pinned ':'
+index_repo
+plan 3 package install tree
+agentos system change reject "$(field id <<<"$change")" >/dev/null
+eq "republished version does not stop the change" applied "$(hostctl_ change apply "$id" | field state)"
+eq "the approved bytes are what got installed" payload "$(cat /usr/share/aos-test-pinned/file)"
+eq "applied change keeps no archive copy" "" "$(ls -A "$artifacts/$id" 2>/dev/null)"
+
+plan 3 package install aos-test-tamper
+id=$(field id <<<"$change")
+agentos system change approve "$id" >/dev/null
+# A valid archive with the same name and version, so only its hash differs.
+DEB_PAYLOAD=tampered DEB_DIR=$artifacts/$id build_deb aos-test-tamper ':'
+eq "a changed archive is refused" 1 "$(status_of hostctl_ change apply "$id")"
+eq "a changed archive makes the change stale" stale "$(hostctl_ change show "$id" | field state)"
+! installed aos-test-tamper; eq "a changed archive installs nothing" 0 $?
+
 # Policy can allow a clean install, and only that.
-set_policy '{"automatic_packages":["hello","aos-test-service","aos-test-setuid","apt-utils","aos-test-clean"]}'
+set_policy '{"automatic_packages":["hello","aos-test-service","aos-test-setuid","apt-utils","aos-test-clean","aos-test-path"]}'
 plan 0 package install hello
 eq "allowlisted package applies without approval" applied "$(field state <<<"$change")"
 eq "policy is recorded as the approver" policy "$(field approved_by <<<"$change")"
 installed hello; eq "hello is installed" 0 $?
 plan 3 package install aos-test-service
 eq "a package with a systemd unit needs approval" 1 "$(field decision.reasons <<<"$change" | grep -c 'aos-test-svc.service')"
+plan 3 package install aos-test-path
+eq "any unit type needs approval" 1 "$(field decision.reasons <<<"$change" | grep -c 'aos-test-x.path')"
+agentos system change reject "$(field id <<<"$change")" >/dev/null
 plan 3 package install aos-test-setuid
 eq "a package with a setuid file needs approval" 1 "$(field decision.reasons <<<"$change" | grep -c 'helper')"
 agentos system change reject "$(field id <<<"$change")" >/dev/null
@@ -88,6 +119,22 @@ eq "the failure is not reported as verified" False "$(hostctl_ change show "$id"
 eq "status reports the unfinished package" False "$(hostctl_ status | field dpkg_consistent)"
 dpkg --purge aos-test-fails >/dev/null 2>&1
 eq "status clears after cleanup" True "$(hostctl_ status | field dpkg_consistent)"
+
+# A failed upgrade leaves dpkg clean and the old version installed. It still failed.
+plan 3 package install aos-test-upgrade
+id=$(field id <<<"$change")
+eq "the plan shows an upgrade" upgrade "$(field impact.actions.0.kind <<<"$change")"
+agentos system change approve "$id" >/dev/null
+eq "failed upgrade fails the change" 1 "$(status_of hostctl_ change apply "$id")"
+eq "failed upgrade is marked failed" failed "$(hostctl_ change show "$id" | field state)"
+eq "old version stays installed" 1.0 "$(dpkg-query -W -f='${Version}' aos-test-upgrade)"
+eq "dpkg itself reports no problem" True "$(hostctl_ status | field dpkg_consistent)"
+
+# Without an audit record, no privileged work starts.
+chattr +i "$audit"
+eq "plan stops when audit cannot be written" 1 "$(status_of hostctl_ package install cowsay "${reason[@]}")"
+chattr -i "$audit"
+eq "no download happened without a record" 0 "$(find /var/cache/apt/archives -name 'cowsay_*' | wc -l)"
 
 # Hostile names reach apt only if they survive validation, and nothing changes.
 before=$(dpkg-query -W | sha256sum)

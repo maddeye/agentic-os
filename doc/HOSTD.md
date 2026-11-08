@@ -14,7 +14,7 @@ Status: implemented by `agentos-hostd`. The [test procedure](TEST_PLAN.md) cover
 
 `hostd` reads the peer UID with `SO_PEERCRED`, which the kernel records at connect time. No request field can state an identity, and any unknown field makes the request malformed.
 
-The socket is `/run/agentos/hostd.sock`, `root:agentos-system`, mode `0660`. Project sandboxes mount an empty `/run`, so a project does not see it.
+The system agent uses `/run/agentos/hostd.sock`, `root:agentos-system`, mode `0660`, limited to 16 connections. The administrator uses `/run/agentos/hostd-admin.sock`, `root:root`, mode `0600`, limited to 4 connections, so the system agent cannot fill it. `agentos system` chooses the socket by its effective UID. Project sandboxes mount an empty `/run`, so a project sees neither.
 
 The `agentos-system` account has a home at `/var/lib/agent-os/system-agent`, no sudo rights, and no group shared with any project. Start a harness under it with `sudo -iu agentos-system`.
 
@@ -22,11 +22,11 @@ The `agentos-system` account has a home at `/var/lib/agent-os/system-agent`, no 
 
 systemd listens on the socket and starts one `agentos-hostd@.service` instance per connection, so no broker process exists while idle. Each instance serves one request and exits. A client that disconnects does not cancel a change.
 
-Mutating requests take an exclusive `flock`. The kernel releases it when the holder dies, so a change found in `applying` while the lock is held has no live owner.
+Mutating requests take an exclusive `flock`. The kernel releases it when the holder dies, so a change found in `applying` while the lock is held has no live owner. A request that cannot get the lock in 5 seconds is refused as `busy`. Run it again later.
 
 ## Requests
 
-Send one JSON object and one newline, up to 64 KiB, within 10 seconds. The reply is one JSON object with `status` set to `ok` or `refused`.
+Send one JSON object and one newline, up to 64 KiB. The whole request must arrive within 10 seconds. The reply is one JSON object with `status` set to `ok` or `refused`.
 
 | `request` | Fields | Effect |
 |---|---|---|
@@ -57,9 +57,13 @@ change_plan ----+                          |            |
                                         rejected      stale
 ```
 
-A plan runs `apt-get update`, simulates the transaction, downloads the packages, and lists their contents without running their scripts. It records each package action, the download size, shipped systemd units, and setuid files.
+A plan runs `apt-get update`, simulates the transaction, and downloads the packages. It copies each archive into `metadata/hostd/artifacts/ID`, then hashes and lists that copy without running its scripts. It records each package action, each archive's SHA-256 and architecture, the download size, autostart files, and setuid files.
 
-Approval covers the exact transaction. `change_apply` simulates again, and any difference moves the change to `stale`. Request a new plan in that case.
+Approval covers the exact archives. `change_apply` hashes the copies and simulates again with them. A changed file or a different transaction moves the change to `stale`. Request a new plan in that case. The install uses only those copies and downloads nothing, so a repository that republishes a version cannot change what was approved. The copies are deleted when the change ends.
+
+For a toolchain, approval covers the whole catalog entry, including its URL, digest, and check.
+
+A change is `applied` only if the command succeeded and every planned action reached its planned version.
 
 ## Policy
 
@@ -76,7 +80,7 @@ A package install is automatic only when all of these are true:
 - Every requested name is on `automatic_packages`.
 - The transaction changes or removes no installed package.
 - No package in the transaction matches a protected prefix.
-- No package ships a systemd unit or a setuid file.
+- No package ships a setuid file, or any file in a systemd unit or generator directory or `/etc/init.d`.
 
 Removals always need approval. Removing an essential package is refused outright. Installs pass `--no-remove`, so an install can never remove a package.
 
@@ -96,7 +100,8 @@ An install runs these steps under `/opt/agent-os/toolchains/.staging`:
 2. Extract without preserving owners or modes.
 3. Give all files to root, remove group and other write, and clear setuid and setgid bits.
 4. Run the check as `nobody` with no new privileges.
-5. Rename the tree to `/opt/agent-os/toolchains/NAME/VERSION`.
+5. Sync the filesystem, so the files are on disk before they can be published.
+6. Rename the tree to `/opt/agent-os/toolchains/NAME/VERSION`.
 
 The rename is the only publication step, so projects see all of a version or none of it. Each project selects versions independently with `agentos project toolchain`. A project with no selection gets no toolchain on `PATH`.
 
@@ -104,19 +109,21 @@ The rename is the only publication step, so projects see all of a version or non
 
 `/var/lib/agent-os/metadata/hostd/audit.jsonl` is mode `0600`. Each line records the time, the event, and the caller's UID, PID, and name. Events also carry the change, action, decision, result, verification, and undo command where they apply.
 
-Each event is written and synced before the step that follows it. If the write fails, the request stops, so no privileged step runs without its record. Malformed requests are recorded without their body, because a body can hold anything a caller sent.
+Each event is written and synced before the step it describes or the step that follows it. Planning and repair run privileged tools, so `planning` and `recovery_started` come first. If a write fails, the request stops, so no privileged step runs without its record. Malformed requests are recorded without their body, because a body can hold anything a caller sent.
 
 | Event | Written when |
 |---|---|
 | `denied` | A caller lacks the role for a request. |
 | `malformed_request` | A request cannot be parsed. |
 | `plan_refused` | Validation or apt rejects a plan. |
+| `planning` | A plan is about to run apt. |
 | `planned` | A change is recorded, with its decision and impact. |
 | `approved`, `rejected` | The administrator decides. |
 | `apply_refused`, `stale` | A change cannot apply. |
 | `applying` | A change is about to run. |
 | `finished` | A change ends, with its verification and undo command. |
-| `recovery` | An interrupted change is repaired. |
+| `recovery_started` | A repair is about to run. |
+| `recovery` | A repair has run, with its result. |
 
 ## Recovery
 
@@ -124,7 +131,7 @@ A change left in `applying` was interrupted by a crash, a kill, or power loss. T
 
 | Change | Repair | Result |
 |---|---|---|
-| Package | `dpkg --configure -a`, then `apt-get -f --no-remove install` | `applied` if verification passes, otherwise `failed` |
+| Package | `dpkg --configure -a`, then `apt-get -f --no-remove --no-download install` if it touches only approved packages | `applied` if verification passes, otherwise `failed` |
 | Toolchain | Removes the staging files | `applied` if the rename happened, otherwise `failed` |
 
 Recovery rolls forward. It does not undo a change that had already finished unpacking. Each outcome records the command that would undo the change.

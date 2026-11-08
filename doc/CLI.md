@@ -57,7 +57,7 @@ Replies are JSON on standard output. Refusals go to standard error.
 | Status | Meaning |
 |---|---|
 | 0 | The request succeeded. |
-| 1 | `hostd` refused the request, the socket is unreachable, or the change failed. |
+| 1 | `hostd` refused the request, another change is running (`busy`), the socket is unreachable, or the change failed. |
 | 2 | Invalid usage. |
 | 3 | The change is waiting for an administrator. |
 
