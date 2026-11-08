@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Tests and builds the Rust binaries with Debian's own compiler. Output goes to .build/bin.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo/tests/vm/image.lock"
+image=agentos-build:$APT_SNAPSHOT
+out=$repo/.build
+
+# CI restores this image from a cache that is keyed on the Dockerfile.
+[[ -n "${AOS_BUILD_IMAGE_LOADED:-}" ]] || docker build -q --build-arg "APT_SNAPSHOT=$APT_SNAPSHOT" -t "$image" -f "$repo/packaging/build.Dockerfile" "$repo/packaging" >/dev/null
+mkdir -p "$out/cargo" "$out/bin"
+cargo() {
+	docker run --rm --network host --user "$(id -u):$(id -g)" -v "$repo:$repo" -w "$repo/crates/hostd" \
+		-e "CARGO_HOME=$out/cargo" -e "CARGO_TARGET_DIR=$out/target" "$image" cargo "$@"
+}
+[[ -f "$repo/crates/hostd/Cargo.lock" ]] || cargo generate-lockfile
+cargo test --locked --quiet
+cargo build --locked --release --quiet
+install -m 0755 "$out/target/release/agentos-hostd" "$out/target/release/agentos-hostctl" "$out/bin/"

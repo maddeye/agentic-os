@@ -81,6 +81,34 @@ The last line is `PASS: integration`. The command needs internet access. It test
 - Deletion with running processes, symlinks, read-only subvolumes, a failed first attempt, and concurrent command starts.
 - Recovery of a crashed create, and refusal of accounts that `agentos` did not allocate.
 
+## Run the hostd suite
+
+```bash
+tests/hostd/run
+```
+
+The last line is `PASS: hostd`. The command needs internet access. It tests these behaviors:
+
+- The exit criterion: the system agent requests `ripgrep`, an administrator approves, and both projects run it.
+- Self-approval, stale plans, rejected changes, policy limits, and hostile package names.
+- Socket access, forged identity, malformed input, and what the system agent cannot do.
+- Two global Node.js versions selected per project, read-only access, bad digests, and failed checks.
+- A broker killed during a package script and during a toolchain install, a concurrent request, and a power cut.
+
+`packaging/build` runs the Rust unit tests and builds the binaries with Debian's compiler in a pinned container. Every VM deployment runs it, so a failing unit test stops the suites.
+
+## Run the suites in GitHub Actions
+
+`.github/workflows/tests.yml` runs only when you start it, because each run uses about 17 minutes of the private repository's Actions allowance. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.
+
+The `prepare` job fails if the runner has no `/dev/kvm`. It also runs the Rust unit tests. It builds the VM baseline and the two Docker images once, and stores them in the Actions cache. To rebuild them, change an input of the cache key in the workflow, such as `tests/vm/image.lock`.
+
+Each suite then runs in its own job and its own VM, the same as a local run. One failing suite does not stop the others. Each job uploads `.vm/results/` and `.vm/serial.log` as an artifact named `SUITE-diagnostics`. A failed job adds the guest journal as `journal.log`.
+
+To reproduce a failure, run the suite's command from the workflow matrix on a machine with `/dev/kvm`.
+
+The integration and hostd suites download from `snapshot.debian.org`, `nodejs.org`, and the npm registry while they run. If one of them fails on a download, the log shows the failing URL. Rerun the failed job.
+
 ## Regenerate the baseline
 
 ```bash
@@ -89,4 +117,4 @@ tests/vm/baseline
 
 The command writes `doc/BASELINE.md` from a capability probe and three fresh boots.
 
-The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, toolchain installation and promotion, snapshot and restore latency, GUI startup and capture, behavior under pressure, and recovery timing.
+The baseline does not yet cover these items from section 8.3 of the architecture, because the components do not exist: harness startup, repository indexing, concurrent builds, global package promotion timing, snapshot and restore latency, GUI startup and capture, behavior under pressure, and recovery timing.

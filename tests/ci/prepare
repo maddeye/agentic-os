@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Builds what every CI suite restores and runs the Rust unit tests.
+# On a restored cache it only loads the images and reruns the unit tests.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+images=$repo/.vm/images.tar
+
+if [[ -f "$images" ]]; then
+	docker load -q -i "$images"
+	export AOS_BUILD_IMAGE_LOADED=1
+fi
+"$repo/tests/vm/vm" build
+"$repo/packaging/build"
+if [[ ! -f "$images" ]]; then
+	mapfile -t tags < <(docker images --format '{{.Repository}}:{{.Tag}}' 'agentos-*')
+	docker save -o "$images" "${tags[@]}"
+fi

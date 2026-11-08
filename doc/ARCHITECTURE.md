@@ -942,16 +942,16 @@ Use typed checks or unprivileged execution whenever possible.
 
 ### Phase 2 — System Agent and Global Packages
 
-- [ ] Define typed `hostd` operation contracts.
-- [ ] Implement authenticated caller identity checks.
-- [ ] Separate project-agent and system-agent privileges.
-- [ ] Execute an approved APT installation.
-- [ ] Add change planning and impact reporting.
-- [ ] Add authorization and audit logging.
-- [ ] Implement global versioned toolchains.
-- [ ] Validate project read-only access to global tools.
-- [ ] Prove project agents cannot call privileged operations.
-- [ ] Test interrupted package transactions.
+- [x] Define typed `hostd` operation contracts.
+- [x] Implement authenticated caller identity checks.
+- [x] Separate project-agent and system-agent privileges.
+- [x] Execute an approved APT installation.
+- [x] Add change planning and impact reporting.
+- [x] Add authorization and audit logging.
+- [x] Implement global versioned toolchains.
+- [x] Validate project read-only access to global tools.
+- [x] Prove project agents cannot call privileged operations.
+- [x] Test interrupted package transactions.
 
 **Exit criterion:** the system agent can request and perform an approved global `ripgrep` installation, all projects can use the result, and project agents cannot impersonate the system agent.
 
@@ -1118,6 +1118,11 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-08 | Systemd units are named by project UID | Project names can contain hyphens, which mean hierarchy in slice names. |
 | 2026-11-08 | `agentos-project.slice` caps all projects at 85% of RAM and 16384 tasks | Keeps capacity for SSH and host services under project load. |
 | 2026-11-08 | Each project gets a network namespace with `veth`, NAT, and an `nftables` policy | Supersedes the accepted loopback and abstract socket gaps. Egress policy remains future work. See `doc/ISOLATION.md`. |
+| 2026-11-08 | `hostd` is written in Rust and socket-activated per connection | A root service that parses requests needs typed input handling. systemd supplies supervision, and no process exists while idle. See `doc/HOSTD.md`. |
+| 2026-11-08 | Rust binaries build with Debian's compiler in a container pinned to the APT snapshot | Matches the target's glibc and adds no new toolchain source. |
+| 2026-11-08 | The system agent is the `agentos-system` account, outside the `aos-` namespace | No project name can collide with it. |
+| 2026-11-08 | Nothing is automatic by default, and approval binds to one exact transaction | The administrator decides what runs unattended. Later package changes cannot widen an approval. |
+| 2026-11-08 | Global toolchains come only from a pinned catalog and publish with one rename | Removes arbitrary global binaries from the API. Projects never see a partial version. |
 | 2026-11-08 | Only `--detach` commands are guaranteed to survive a lost connection, and nothing resumes after reboot | Transient units are not persistent. Data survives. See `doc/CLI.md`. |
 
 ---

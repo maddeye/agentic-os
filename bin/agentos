@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Administrator CLI for Agent OS projects. Run as root. doc/ISOLATION.md defines
-# the identities, layout, and sandbox that this script creates.
+# the identities, layout, and sandbox that this script creates. `agentos system`
+# goes to the hostd client, which needs no privilege of its own.
 set -euo pipefail
 # Command substitutions must also stop at the first failure.
 shopt -s inherit_errexit
@@ -10,6 +11,7 @@ projects=$data/projects
 registry=$data/metadata/projects
 counter=$data/metadata/next-uid
 properties=/usr/share/agent-os/native-restricted.properties
+toolchains=/opt/agent-os/toolchains
 uid_first=20000
 uid_last=29999
 
@@ -20,10 +22,12 @@ usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memor
        agentos project inspect NAME
        agentos project run [--detach] NAME -- COMMAND [ARG...]
        agentos project shell NAME
+       agentos project toolchain NAME TOOL VERSION|--clear
        agentos project ps NAME
        agentos project logs NAME ID
        agentos project stop NAME [ID]
        agentos project delete NAME --yes
+       agentos system ...    (run 'agentos system' for its commands)
 USAGE
 	exit 2
 }
@@ -32,6 +36,11 @@ die() { echo "agentos: $*" >&2; exit 2; }
 
 check_name() {
 	[[ "$1" =~ ^[a-z]([a-z0-9-]{0,26}[a-z0-9])?$ ]] || die "invalid project name: '$1'"
+}
+
+check_toolchain() { # <tool> <version>
+	[[ "$1" =~ ^[a-z][a-z0-9-]{0,63}$ ]] || die "invalid toolchain name: '$1'"
+	[[ "$2" =~ ^[0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid toolchain version: '$2'"
 }
 
 check_id() {
@@ -156,6 +165,37 @@ running_ids() { # <uid>
 		| sed -nE "s/^aos-run-$1-([0-9a-f]{8})\.service.*/\1/p"
 }
 
+cmd_toolchain() {
+	local name=${1:-} tool=${2:-} version=${3:-}
+	check_name "$name"
+	[[ $# -eq 3 ]] || usage
+	if [[ "$version" == --clear ]]; then
+		check_toolchain "$tool" 0
+	else
+		check_toolchain "$tool" "$version"
+		[[ -x "$toolchains/$tool/$version/bin" ]] || die "toolchain is not installed: $tool $version"
+	fi
+	take_lock
+	project_uid "$name" >/dev/null
+	{
+		grep -v "^toolchain\.$tool=" "$registry/$name"
+		[[ "$version" == --clear ]] || echo "toolchain.$tool=$version"
+	} > "$registry/$name.tmp"
+	mv "$registry/$name.tmp" "$registry/$name"
+}
+
+# Project tools come first, then the selected toolchains, then the host.
+toolchain_path() { # <name>
+	local key version dir path=$projects/$1/home/.local/bin
+	while IFS='=' read -r key version; do
+		[[ "$key" == toolchain.* ]] || continue
+		dir=$toolchains/${key#toolchain.}/$version/bin
+		[[ -x "$dir" ]] || die "project $1 selects a toolchain that is not installed: ${key#toolchain.} $version"
+		path+=:$dir
+	done < "$registry/$1"
+	echo "$path:/usr/local/bin:/usr/bin:/bin"
+}
+
 cmd_run() {
 	local detach=false
 	if [[ "${1:-}" == --detach ]]; then
@@ -175,6 +215,9 @@ cmd_run() {
 		line=${line//@ROOT@/$projects/$name}
 		flags+=(-p "${line//@UID@/$uid}")
 	done < "$properties"
+	if grep -q '^toolchain\.' "$registry/$name"; then
+		flags+=(-p "Environment=PATH=$(toolchain_path "$name")")
+	fi
 
 	# env finds COMMAND inside the sandbox, on the project's PATH. Expansion stays
 	# off because systemd would otherwise rewrite $VAR in the arguments.
@@ -257,6 +300,11 @@ cmd_delete() {
 	rm -f "$registry/$name.deleting"
 }
 
+if [[ "${1:-}" == system ]]; then
+	shift
+	exec /usr/local/sbin/agentos-hostctl "$@"
+fi
+
 if [[ "$EUID" -ne 0 ]]; then
 	echo "agentos: must run as root" >&2
 	exit 1
@@ -275,6 +323,7 @@ case "$verb" in
 		cmd_run "$1" -- /bin/bash -l
 		;;
 	ps) cmd_ps "$@" ;;
+	toolchain) cmd_toolchain "$@" ;;
 	logs) cmd_logs "$@" ;;
 	stop) cmd_stop "$@" ;;
 	delete) cmd_delete "$@" ;;
