@@ -1,0 +1,25 @@
+# Project network policy. Interfaces named aos-* are project veth pairs.
+destroy table inet agentos
+
+table inet agentos {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname "aos-*" ct state established,related accept
+		iifname "aos-*" drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		iifname "aos-*" oifname "aos-*" drop
+		iifname "aos-*" accept
+		oifname "aos-*" ct state established,related accept
+		oifname "aos-*" drop
+		# IP forwarding exists only for projects. This host is not a router.
+		drop
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 10.213.0.0/16 masquerade
+	}
+}

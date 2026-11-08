@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Runs the isolation suite in a freshly reset VM and copies the results out.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+out="$repo/.vm/results/isolation-$(date -u +%Y%m%dT%H%M%SZ)"
+
+"$repo/tests/vm/deploy"
+mkdir -p "$out"
+status=0
+"$vm" ssh 'sudo /opt/aos-tests/tests/isolation/guest/suite.sh' | tee "$out/results.tsv" || status=$?
+"$vm" ssh 'sudo cat /var/log/aos-isolation-transcript.log' > "$out/transcript.log"
+"$vm" down
+echo "results: $out/results.tsv"
+exit "$status"

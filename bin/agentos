@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# Administrator CLI for Agent OS projects. Run as root. doc/ISOLATION.md defines
+# the identities, layout, and sandbox that this script creates.
+set -euo pipefail
+# Command substitutions must also stop at the first failure.
+shopt -s inherit_errexit
+
+data=/var/lib/agent-os
+projects=$data/projects
+registry=$data/metadata/projects
+counter=$data/metadata/next-uid
+properties=/usr/share/agent-os/native-restricted.properties
+uid_first=20000
+uid_last=29999
+
+usage() {
+	cat >&2 <<'USAGE'
+usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memory-max SIZE] [--tasks N]
+       agentos project list
+       agentos project inspect NAME
+       agentos project run [--detach] NAME -- COMMAND [ARG...]
+       agentos project shell NAME
+       agentos project ps NAME
+       agentos project logs NAME ID
+       agentos project stop NAME [ID]
+       agentos project delete NAME --yes
+USAGE
+	exit 2
+}
+
+die() { echo "agentos: $*" >&2; exit 2; }
+
+check_name() {
+	[[ "$1" =~ ^[a-z]([a-z0-9-]{0,26}[a-z0-9])?$ ]] || die "invalid project name: '$1'"
+}
+
+check_id() {
+	[[ "$1" =~ ^[0-9a-f]{8}$ ]] || die "invalid command id: '$1'"
+}
+
+# The registry entry exists under NAME only while the project is usable.
+# `delete` renames it to NAME.deleting, so `run` stops accepting new commands.
+project_uid() {
+	[[ -f "$registry/$1" ]] || die "no such project: $1"
+	sed -n 's/^uid=//p' "$registry/$1"
+}
+
+slice_of() { echo "agentos-project-$1.slice"; }
+slice_file() { echo "/etc/systemd/system/$(slice_of "$1")"; }
+
+take_lock() {
+	exec 9>"$data/metadata/lock"
+	flock 9
+}
+
+next_uid() {
+	local uid=$uid_first
+	if [[ -e "$counter" ]]; then
+		uid=$(<"$counter")
+		[[ "$uid" =~ ^[0-9]+$ ]] || die "corrupt UID counter: $counter"
+	fi
+	while getent passwd "$uid" >/dev/null || getent group "$uid" >/dev/null; do
+		uid=$((uid + 1))
+	done
+	(( uid <= uid_last )) || die "project UID range is exhausted"
+	# UIDs are never reused. Snapshots and backups can outlive a project.
+	echo $((uid + 1)) > "$counter.tmp"
+	mv "$counter.tmp" "$counter"
+	echo "$uid"
+}
+
+cmd_create() {
+	local name="" cpu="" memory_high=70% memory_max=80% tasks=4096
+	while (( $# )); do
+		case "$1" in
+			--cpu) cpu=${2:-}; [[ "$cpu" =~ ^[1-9][0-9]*$ ]] || die "invalid --cpu"; shift 2 ;;
+			--memory-high) memory_high=${2:-}; check_size "$memory_high"; shift 2 ;;
+			--memory-max) memory_max=${2:-}; check_size "$memory_max"; shift 2 ;;
+			--tasks) tasks=${2:-}; [[ "$tasks" =~ ^[1-9][0-9]*$ ]] || die "invalid --tasks"; shift 2 ;;
+			-*) usage ;;
+			*) [[ -z "$name" ]] || usage; name=$1; shift ;;
+		esac
+	done
+	check_name "$name"
+	take_lock
+	[[ ! -e "$registry/$name" && ! -e "$registry/$name.deleting" ]] || die "project already exists: $name"
+
+	# NAME.creating records the UID before the account exists. Only a create that
+	# wrote this record may resume, so an unrelated aos-NAME account is never adopted.
+	local user=aos-$name root=$projects/$name intent=$registry/$name.creating uid child
+	if [[ -f "$intent" ]]; then
+		uid=$(sed -n 's/^uid=//p' "$intent")
+	else
+		id -u "$user" >/dev/null 2>&1 && die "user $user already exists"
+		uid=$(next_uid)
+		echo "uid=$uid" > "$intent"
+	fi
+	id -u "$user" >/dev/null 2>&1 || useradd --uid "$uid" --user-group --no-create-home \
+		--home-dir "$root/home" --shell /usr/sbin/nologin "$user"
+	[[ "$(id -u "$user")" == "$uid" ]] || die "user $user does not match its recorded UID"
+
+	# Root owns the project directory, so a project cannot swap a child for a
+	# symlink that root-run tooling would later follow.
+	install -d -o root -g "$user" -m 0750 "$root"
+	for child in workspace home cache state artifacts tmp; do
+		install -d -o "$user" -g "$user" -m 0700 "$root/$child"
+	done
+
+	{
+		echo "[Slice]"
+		echo "MemoryHigh=$memory_high"
+		echo "MemoryMax=$memory_max"
+		echo "MemorySwapMax=0"
+		echo "TasksMax=$tasks"
+		[[ -z "$cpu" ]] || echo "CPUQuota=$cpu%"
+	} > "$(slice_file "$uid").tmp"
+	mv "$(slice_file "$uid").tmp" "$(slice_file "$uid")"
+	systemctl daemon-reload
+
+	printf 'name=%s\nuid=%s\ncreated=%s\nprofile=native-restricted\n' \
+		"$name" "$uid" "$(date -u +%FT%TZ)" > "$registry/$name.tmp"
+	mv "$registry/$name.tmp" "$registry/$name"
+	rm -f "$intent"
+	echo "$name"
+}
+
+check_size() {
+	[[ "$1" =~ ^([1-9][0-9]*[KMGT]?|[1-9][0-9]?%|100%)$ ]] || die "invalid size: '$1'"
+}
+
+cmd_list() {
+	local entry name uid
+	printf 'NAME\tUID\tCOMMANDS\tCREATED\n'
+	for entry in "$registry"/*; do
+		name=${entry##*/}
+		[[ -f "$entry" && "$name" != *.* ]] || continue
+		uid=$(project_uid "$name")
+		printf '%s\t%s\t%s\t%s\n' "$name" "$uid" "$(running_ids "$uid" | wc -l)" "$(sed -n 's/^created=//p' "$entry")"
+	done
+}
+
+cmd_inspect() {
+	local name=${1:-} uid
+	check_name "$name"
+	uid=$(project_uid "$name")
+	cat "$registry/$name"
+	echo "path=$projects/$name"
+	echo "address=$(agentos-netns address "$uid")"
+	echo "disk_bytes=$(du -sb "$projects/$name" | cut -f1)"
+	echo "commands=$(running_ids "$uid" | wc -l)"
+	sed -n 's/^\([A-Za-z]*=.*\)$/limit.\1/p' "$(slice_file "$uid")"
+}
+
+running_ids() { # <uid>
+	systemctl list-units --plain --no-legend --no-pager --type=service --state=active "aos-run-$1-*.service" \
+		| sed -nE "s/^aos-run-$1-([0-9a-f]{8})\.service.*/\1/p"
+}
+
+cmd_run() {
+	local detach=false
+	if [[ "${1:-}" == --detach ]]; then
+		detach=true
+		shift
+	fi
+	local name=${1:-}
+	check_name "$name"
+	[[ "${2:-}" == -- && $# -ge 3 ]] || usage
+	shift 2
+
+	local uid id line flags=()
+	uid=$(project_uid "$name")
+	id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+	while IFS= read -r line; do
+		[[ -z "$line" || "$line" == \#* ]] && continue
+		line=${line//@ROOT@/$projects/$name}
+		flags+=(-p "${line//@UID@/$uid}")
+	done < "$properties"
+
+	# env finds COMMAND inside the sandbox, on the project's PATH. Expansion stays
+	# off because systemd would otherwise rewrite $VAR in the arguments.
+	local start=(systemd-run --expand-environment=no --collect --quiet --unit="aos-run-$uid-$id.service"
+		--slice="$(slice_of "$uid")" --uid="aos-$name" --gid="aos-$name" "${flags[@]}")
+	if $detach; then
+		"${start[@]}" -- /usr/bin/env -- "$@"
+		echo "$id"
+	elif [[ -t 0 && -t 1 ]]; then
+		exec "${start[@]}" --pty --wait -- /usr/bin/env -- "$@"
+	else
+		exec "${start[@]}" --pipe --wait -- /usr/bin/env -- "$@"
+	fi
+}
+
+cmd_ps() {
+	local name=${1:-}
+	check_name "$name"
+	running_ids "$(project_uid "$name")"
+}
+
+cmd_logs() {
+	local name=${1:-} id=${2:-}
+	check_name "$name"
+	check_id "$id"
+	journalctl --no-pager -o cat "_SYSTEMD_UNIT=aos-run-$(project_uid "$name")-$id.service"
+}
+
+cmd_stop() {
+	local name=${1:-} id=${2:-} uid
+	check_name "$name"
+	uid=$(project_uid "$name")
+	if [[ -n "$id" ]]; then
+		check_id "$id"
+		systemctl stop "aos-run-$uid-$id.service"
+	else
+		systemctl stop "$(slice_of "$uid")"
+	fi
+}
+
+cmd_delete() {
+	local name=${1:-}
+	check_name "$name"
+	[[ "${2:-}" == --yes ]] || die "delete removes all project data. Pass --yes to confirm."
+	take_lock
+	if [[ -f "$registry/$name" ]]; then
+		mv "$registry/$name" "$registry/$name.deleting"
+	fi
+	[[ -f "$registry/$name.deleting" ]] || die "no such project: $name"
+
+	# Every step tolerates absence, so a delete that failed can be run again.
+	# The tombstone stays until the end, so a failure cannot free the name.
+	local uid _
+	uid=$(sed -n 's/^uid=//p' "$registry/$name.deleting")
+
+	# `run` takes no lock. A masked slice makes systemd refuse any command that
+	# passed its registry check just before the rename above.
+	ln -sf /dev/null "$(slice_file "$uid")"
+	systemctl daemon-reload
+	systemctl stop "$(slice_of "$uid")" 2>/dev/null || true
+	pkill -KILL -U "$uid" 2>/dev/null || true
+	for _ in $(seq 1 50); do
+		pgrep -U "$uid" >/dev/null || break
+		sleep 0.1
+	done
+	! pgrep -U "$uid" >/dev/null || die "processes of $name are still running"
+	systemctl stop "agentos-netns@$uid.service" 2>/dev/null || true
+	# A project can create nested Btrfs subvolumes, so no --one-file-system here.
+	# Read-only ones would fail the rm. Inode 256 is the root of a subvolume.
+	find "$projects/$name" -type d -inum 256 -exec btrfs property set -f {} ro false \; 2>/dev/null || true
+	rm -rf "${projects:?}/$name"
+	if id -u "aos-$name" >/dev/null 2>&1; then
+		userdel "aos-$name"
+	fi
+	if getent group "aos-$name" >/dev/null; then
+		groupdel "aos-$name"
+	fi
+	rm -f "$(slice_file "$uid")"
+	systemctl daemon-reload
+	rm -f "$registry/$name.deleting"
+}
+
+if [[ "$EUID" -ne 0 ]]; then
+	echo "agentos: must run as root" >&2
+	exit 1
+fi
+
+[[ "${1:-}" == project && $# -ge 2 ]] || usage
+verb=$2
+shift 2
+case "$verb" in
+	create) cmd_create "$@" ;;
+	list) cmd_list ;;
+	inspect) cmd_inspect "$@" ;;
+	run) cmd_run "$@" ;;
+	shell)
+		[[ $# -eq 1 ]] || usage
+		cmd_run "$1" -- /bin/bash -l
+		;;
+	ps) cmd_ps "$@" ;;
+	logs) cmd_logs "$@" ;;
+	stop) cmd_stop "$@" ;;
+	delete) cmd_delete "$@" ;;
+	*) usage ;;
+esac

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Proves that snapshot restore and reset return both VM disks to known states.
+set -euo pipefail
+vm="$(dirname "${BASH_SOURCE[0]}")/vm"
+root=/etc/aos-canary
+data=/var/lib/agent-os/aos-canary
+
+has() { "$vm" ssh "test -f $1"; }
+expect() { # <present|absent> <path>
+	if has "$2"; then state=present; else state=absent; fi
+	[[ "$state" == "$1" ]] || { echo "FAIL: $2 is $state, expected $1" >&2; exit 1; }
+	echo "ok: $2 is $state"
+}
+
+"$vm" reset
+"$vm" ssh "sudo touch $root $data"
+"$vm" snapshot save with-canary
+"$vm" ssh "sudo rm $root $data"
+expect absent "$root"
+expect absent "$data"
+"$vm" snapshot restore with-canary
+expect present "$root"
+expect present "$data"
+"$vm" reset
+expect absent "$root"
+expect absent "$data"
+"$vm" down
+echo "PASS: snapshot restore and reset"

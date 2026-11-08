@@ -1,0 +1,10 @@
+[Unit]
+Description=Agent OS network namespace for project UID %i
+Requires=agentos-firewall.service
+After=agentos-firewall.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/agentos-netns up %i
+ExecStop=/usr/local/sbin/agentos-netns down %i

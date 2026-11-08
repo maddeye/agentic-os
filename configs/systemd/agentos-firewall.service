@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent OS project network policy
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/share/agent-os/agentos.nft
+# Forwarding starts only after the policy has loaded.
+ExecStartPost=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1
+
+[Install]
+WantedBy=multi-user.target

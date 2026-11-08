@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Manages one project's network namespace. Usage: agentos-netns up|down|address UID
+# agentos-netns@UID.service runs up and down. doc/ISOLATION.md defines the address plan.
+set -euo pipefail
+
+action=${1:-}
+uid=${2:-}
+[[ "$uid" =~ ^2[0-9]{4}$ ]] || { echo "agentos-netns: invalid UID: '$uid'" >&2; exit 2; }
+
+# Each project owns one /30 inside 10.213.0.0/16. The host side takes .1 and the project .2.
+offset=$(( (uid - 20000) * 4 ))
+network=10.213.$(( offset >> 8 ))
+low=$(( offset & 255 ))
+host_ip=$network.$(( low + 1 ))
+project_ip=$network.$(( low + 2 ))
+ns=aos-$uid
+
+down() {
+	ip netns delete "$ns" 2>/dev/null || true
+	ip link delete "$ns" 2>/dev/null || true
+}
+
+case "$action" in
+	address) echo "$project_ip" ;;
+	down) down ;;
+	up)
+		down
+		ip netns add "$ns"
+		ip link add "$ns" type veth peer name eth0 netns "$ns"
+		ip addr add "$host_ip/30" dev "$ns"
+		ip link set "$ns" up
+		ip -n "$ns" link set lo up
+		ip -n "$ns" addr add "$project_ip/30" dev eth0
+		ip -n "$ns" link set eth0 up
+		ip -n "$ns" route add default via "$host_ip"
+		;;
+	*) echo "usage: agentos-netns up|down|address UID" >&2; exit 2 ;;
+esac

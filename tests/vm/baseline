@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Regenerates doc/BASELINE.md: Debian capabilities plus three fresh-boot benchmark runs.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+vm="$here/vm"
+runs=3
+out="$repo/.vm/results/baseline-$(date -u +%Y%m%dT%H%M%SZ)"
+source "$here/image.lock"
+mkdir -p "$out"
+
+"$here/deploy"
+"$vm" ssh 'sudo /opt/aos-tests/tests/vm/guest/probe.sh' > "$out/capabilities.tsv"
+for run in $(seq 1 "$runs"); do
+	"$here/deploy"
+	"$vm" ssh 'sudo /opt/aos-tests/tests/vm/guest/benchmark.sh' > "$out/run-$run.tsv"
+done
+"$vm" down
+
+{
+	cat <<HEADER
+# Debian baseline reference
+
+\`tests/vm/baseline\` generates this file. Do not edit it by hand.
+
+The values describe the unmodified test VM. Later phases compare against them.
+
+- Image: \`$(basename "$IMAGE_URL")\`
+- APT snapshot: \`$APT_SNAPSHOT\`
+- VM: 4 vCPU, 4 GiB RAM, virtio disks, KVM, QEMU \`$(docker run --rm "agentos-vm-toolbox:$APT_SNAPSHOT" qemu-system-x86_64 --version | sed -n '1s/.*version \([^ ]*\).*/\1/p')\`
+- Development machine: $(sed -n 's/^model name[^:]*: //p' /proc/cpuinfo | head -1), Linux $(uname -r)
+
+## Measured capabilities
+
+| Capability | Value |
+|---|---|
+HEADER
+	awk -F'\t' '{printf "| %s | `%s` |\n", $1, $2}' "$out/capabilities.tsv"
+	cat <<HEADER
+
+## Benchmarks over $runs fresh boots
+
+Treat disk and CPU numbers as relative. They depend on the development machine.
+
+| Metric | Median | Min | Max |
+|---|---|---|---|
+HEADER
+	awk -F'\t' '
+		!($1 in seen) { seen[$1] = 1; order[++n] = $1 }
+		{ values[$1] = values[$1] " " $2 }
+		END {
+			for (i = 1; i <= n; i++) {
+				count = split(values[order[i]], v, " ")
+				asort(v, sorted, "@val_num_asc")
+				printf "| %s | %s | %s | %s |\n", order[i], sorted[int((count + 1) / 2)], sorted[1], sorted[count]
+			}
+		}' "$out"/run-*.tsv
+} > "$repo/doc/BASELINE.md"
+echo "wrote doc/BASELINE.md, raw data in $out"

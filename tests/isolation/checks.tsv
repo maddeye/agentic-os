@@ -1,0 +1,78 @@
+# id	invariant	control	plain	restricted	command
+# Columns are tab separated. Exit 0 from the command means the access worked.
+# control names who may legitimately do it: victim, root, or - for none.
+# Expected results are open, blocked, or gap. A gap is an open access that doc/ISOLATION.md accepts.
+
+# Project A cannot reach project B's files
+home_read	1	victim	blocked	blocked	cat $VICTIM_ROOT/home/secret
+workspace_read	1	victim	blocked	blocked	cat $VICTIM_ROOT/workspace/source
+project_names	1	root	blocked	blocked	ls /var/lib/agent-os/projects | grep -q beta
+passwd_project_names	1	root	open	gap	grep -q aos-beta /etc/passwd
+credentials_file	1	victim	blocked	blocked	cat $VICTIM_ROOT/home/.git-credentials
+gui_socket	6	victim	blocked	blocked	$CONNECT unix $VICTIM_ROOT/state/gui.sock
+
+# Shared temporary storage and IPC
+tmp_cross	1	victim	open	blocked	cat /tmp/beta-world
+var_tmp_cross	1	victim	open	blocked	cat /var/tmp/beta-world
+dev_shm_cross	1	victim	open	blocked	cat /dev/shm/beta-world
+sysv_shm_cross	1	victim	open	blocked	ipcs -m | grep -q aos-beta
+mqueue_cross	1	victim	open	blocked	test -e /dev/mqueue/beta-q
+
+# Network namespaces
+abstract_socket	6	victim	open	blocked	$CONNECT abstract beta-sock
+loopback_tcp	1	victim	open	blocked	$CONNECT tcp 45001
+host_loopback_ssh	3	root	open	blocked	$CONNECT tcp 22
+host_uplink_ssh	3	root	open	blocked	$CONNECT tcp 10.0.2.15:22
+net_admin	3	root	blocked	blocked	ip addr add 10.99.99.1/32 dev lo || exit 1; ip addr del 10.99.99.1/32 dev lo
+
+# Other projects' processes
+proc_visible	1	victim	open	blocked	test -d /proc/$VICTIM_PID
+proc_cmdline	1	victim	open	blocked	cat /proc/$VICTIM_PID/cmdline
+proc_environ	1	victim	blocked	blocked	cat /proc/$VICTIM_PID/environ
+signal	1	victim	blocked	blocked	kill -0 $VICTIM_PID
+
+# Host configuration and packages
+etc_write	2	root	blocked	blocked	touch /etc/.aos-probe && rm /etc/.aos-probe
+usr_write	2	root	blocked	blocked	touch /usr/bin/.aos-probe && rm /usr/bin/.aos-probe
+boot_write	2	root	blocked	blocked	touch /boot/.aos-probe && rm /boot/.aos-probe
+dpkg_db_write	2	root	blocked	blocked	touch /var/lib/dpkg/.aos-probe && rm /var/lib/dpkg/.aos-probe
+apt_install	2	root	blocked	blocked	DEBIAN_FRONTEND=noninteractive apt-get install -y -q hello && apt-get purge -y -q hello
+service_start	2	root	blocked	blocked	systemctl start aos-canary.service
+toolchain_write	5	root	blocked	blocked	touch /opt/agent-os/toolchains/.aos-probe && rm /opt/agent-os/toolchains/.aos-probe
+
+# Privilege escalation
+sudo	3	root	blocked	blocked	sudo -n true
+setuid_binary	3	root	open	blocked	test "$(/usr/local/bin/aos-suid-id -u)" = 0
+system_bus	3	root	open	blocked	$CONNECT unix /run/dbus/system_bus_socket
+capabilities	3	root	blocked	blocked	grep -q '^CapEff:.*[1-9a-f]' /proc/self/status
+replace_own_project_dir	3	root	blocked	blocked	mv $ALPHA_ROOT/workspace $ALPHA_ROOT/w2 && mv $ALPHA_ROOT/w2 $ALPHA_ROOT/workspace
+
+# Host credentials and state
+agentos_cli	3	root	blocked	blocked	/usr/local/sbin/agentos project list
+shadow	3	root	blocked	blocked	cat /etc/shadow
+ssh_host_key	3	root	blocked	blocked	cat /etc/ssh/ssh_host_ed25519_key
+admin_ssh_keys	3	root	blocked	blocked	cat /home/admin/.ssh/authorized_keys
+metadata_read	3	root	blocked	blocked	cat /var/lib/agent-os/metadata/secret
+snapshots_list	3	root	blocked	blocked	cd /var/lib/agent-os/snapshots
+
+# Kernel interfaces
+dmesg	8	root	blocked	blocked	dmesg
+sysctl_write	8	root	blocked	blocked	f=/proc/sys/kernel/randomize_va_space; echo $(cat $f) > $f
+cgroup_write	8	root	blocked	blocked	mkdir /sys/fs/cgroup/aos-probe && rmdir /sys/fs/cgroup/aos-probe
+mount_tmpfs	8	root	blocked	blocked	mount -t tmpfs none /mnt && umount /mnt
+block_device	2	root	blocked	blocked	head -c1 /dev/vda
+
+# Resource limits. The rows expect plain mode to have no limit.
+memory_limit	7	root	open	blocked	python3 -c 'x = b"\1" * (768 << 20)'
+tasks_limit	7	root	open	blocked	python3 -c 'import subprocess; [subprocess.Popen(["sleep", "3"]) for _ in range(200)]'
+
+# Normal development work must keep working
+own_workspace_write	-	-	open	open	touch $ALPHA_ROOT/workspace/x && rm $ALPHA_ROOT/workspace/x
+own_home_write	-	-	open	open	touch $ALPHA_ROOT/home/x && rm $ALPHA_ROOT/home/x
+own_tmp_write	-	-	open	open	touch /tmp/alpha-x && rm /tmp/alpha-x
+exec_from_workspace	-	-	open	open	cp /usr/bin/true $ALPHA_ROOT/workspace/t && $ALPHA_ROOT/workspace/t; r=$?; rm -f $ALPHA_ROOT/workspace/t; exit $r
+toolchain_read	-	-	open	open	cat /opt/agent-os/toolchains/marker
+dns	-	-	open	open	getent hosts deb.debian.org
+https_egress	-	-	open	open	curl -fsS -m 20 -o /dev/null https://deb.debian.org/debian/dists/trixie/Release.gpg
+jit_rwx_memory	-	-	open	open	python3 -c 'import mmap; mmap.mmap(-1, 4096, prot=mmap.PROT_READ|mmap.PROT_WRITE|mmap.PROT_EXEC)'
+user_namespace	-	-	open	open	unshare -Ur true

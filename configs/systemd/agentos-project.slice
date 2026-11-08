@@ -1,0 +1,4 @@
+# Parent of every project slice. These limits keep capacity for the host and SSH.
+[Slice]
+MemoryMax=85%
+TasksMax=16384
