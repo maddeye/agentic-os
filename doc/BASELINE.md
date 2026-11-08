@@ -55,14 +55,14 @@ Treat disk and CPU numbers as relative. They depend on the development machine.
 
 | Metric | Median | Min | Max |
 |---|---|---|---|
-| Boot, kernel (s) | 2.303 | 2.275 | 2.330 |
-| Boot, userspace (s) | 1.815 | 1.724 | 1.839 |
-| Idle CPU, all vCPUs (%) | 0.01 | 0.00 | 0.01 |
-| Idle memory used (MiB) | 305 | 304 | 314 |
-| Processes at idle | 147 | 146 | 148 |
-| Root disk used (MiB) | 795 | 795 | 795 |
-| No-op unit, plain (ms) | 13 | 13 | 14 |
-| No-op command, agentos project run (ms) | 51 | 50 | 52 |
-| SHA-256, one core (MiB/s) | 603 | 602 | 607 |
-| Direct write, ext4 root (MiB/s) | 461 | 442 | 469 |
-| Direct write, Btrfs data (MiB/s) | 119 | 87 | 123 |
+| Boot, kernel (s) | 2.306 | 2.298 | 2.359 |
+| Boot, userspace (s) | 1.751 | 1.726 | 1.797 |
+| Idle CPU, all vCPUs (%) | 0.00 | 0.00 | 0.01 |
+| Idle memory used (MiB) | 303 | 298 | 314 |
+| Processes at idle | 148 | 145 | 149 |
+| Root disk used (MiB) | 797 | 797 | 797 |
+| No-op unit, plain (ms) | 13 | 12 | 13 |
+| No-op command, agentos project run (ms) | 59 | 57 | 62 |
+| SHA-256, one core (MiB/s) | 600 | 599 | 604 |
+| Direct write, ext4 root (MiB/s) | 462 | 436 | 463 |
+| Direct write, Btrfs data (MiB/s) | 114 | 71 | 122 |

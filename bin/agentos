@@ -2,6 +2,8 @@
 # Administrator CLI for Agent OS projects. Run as root. doc/ISOLATION.md defines
 # the identities, layout, and sandbox that this script creates.
 set -euo pipefail
+# Command substitutions must also stop at the first failure.
+shopt -s inherit_errexit
 
 data=/var/lib/agent-os
 projects=$data/projects
@@ -52,8 +54,11 @@ take_lock() {
 }
 
 next_uid() {
-	local uid
-	uid=$(cat "$counter" 2>/dev/null || echo "$uid_first")
+	local uid=$uid_first
+	if [[ -e "$counter" ]]; then
+		uid=$(<"$counter")
+		[[ "$uid" =~ ^[0-9]+$ ]] || die "corrupt UID counter: $counter"
+	fi
 	while getent passwd "$uid" >/dev/null || getent group "$uid" >/dev/null; do
 		uid=$((uid + 1))
 	done
@@ -80,14 +85,19 @@ cmd_create() {
 	take_lock
 	[[ ! -e "$registry/$name" && ! -e "$registry/$name.deleting" ]] || die "project already exists: $name"
 
-	# A create that crashed left no registry entry, so this run converges on it.
-	local user=aos-$name root=$projects/$name uid child
-	uid=$(id -u "$user" 2>/dev/null) || {
+	# NAME.creating records the UID before the account exists. Only a create that
+	# wrote this record may resume, so an unrelated aos-NAME account is never adopted.
+	local user=aos-$name root=$projects/$name intent=$registry/$name.creating uid child
+	if [[ -f "$intent" ]]; then
+		uid=$(sed -n 's/^uid=//p' "$intent")
+	else
+		id -u "$user" >/dev/null 2>&1 && die "user $user already exists"
 		uid=$(next_uid)
-		useradd --uid "$uid" --user-group --no-create-home --home-dir "$root/home" \
-			--shell /usr/sbin/nologin "$user"
-	}
-	(( uid >= uid_first && uid <= uid_last )) || die "user $user exists outside the project UID range"
+		echo "uid=$uid" > "$intent"
+	fi
+	id -u "$user" >/dev/null 2>&1 || useradd --uid "$uid" --user-group --no-create-home \
+		--home-dir "$root/home" --shell /usr/sbin/nologin "$user"
+	[[ "$(id -u "$user")" == "$uid" ]] || die "user $user does not match its recorded UID"
 
 	# Root owns the project directory, so a project cannot swap a child for a
 	# symlink that root-run tooling would later follow.
@@ -110,6 +120,7 @@ cmd_create() {
 	printf 'name=%s\nuid=%s\ncreated=%s\nprofile=native-restricted\n' \
 		"$name" "$uid" "$(date -u +%FT%TZ)" > "$registry/$name.tmp"
 	mv "$registry/$name.tmp" "$registry/$name"
+	rm -f "$intent"
 	echo "$name"
 }
 
@@ -134,6 +145,7 @@ cmd_inspect() {
 	uid=$(project_uid "$name")
 	cat "$registry/$name"
 	echo "path=$projects/$name"
+	echo "address=$(agentos-netns address "$uid")"
 	echo "disk_bytes=$(du -sb "$projects/$name" | cut -f1)"
 	echo "commands=$(running_ids "$uid" | wc -l)"
 	sed -n 's/^\([A-Za-z]*=.*\)$/limit.\1/p' "$(slice_file "$uid")"
@@ -160,7 +172,8 @@ cmd_run() {
 	id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 	while IFS= read -r line; do
 		[[ -z "$line" || "$line" == \#* ]] && continue
-		flags+=(-p "${line//@ROOT@/$projects/$name}")
+		line=${line//@ROOT@/$projects/$name}
+		flags+=(-p "${line//@UID@/$uid}")
 	done < "$properties"
 
 	# env finds COMMAND inside the sandbox, on the project's PATH. Expansion stays
@@ -212,17 +225,33 @@ cmd_delete() {
 	fi
 	[[ -f "$registry/$name.deleting" ]] || die "no such project: $name"
 
-	# Every step tolerates absence, so a delete that crashed can be run again.
-	local uid
+	# Every step tolerates absence, so a delete that failed can be run again.
+	# The tombstone stays until the end, so a failure cannot free the name.
+	local uid _
 	uid=$(sed -n 's/^uid=//p' "$registry/$name.deleting")
+
+	# `run` takes no lock. A masked slice makes systemd refuse any command that
+	# passed its registry check just before the rename above.
+	ln -sf /dev/null "$(slice_file "$uid")"
+	systemctl daemon-reload
 	systemctl stop "$(slice_of "$uid")" 2>/dev/null || true
 	pkill -KILL -U "$uid" 2>/dev/null || true
+	for _ in $(seq 1 50); do
+		pgrep -U "$uid" >/dev/null || break
+		sleep 0.1
+	done
+	! pgrep -U "$uid" >/dev/null || die "processes of $name are still running"
+	systemctl stop "agentos-netns@$uid.service" 2>/dev/null || true
 	# A project can create nested Btrfs subvolumes, so no --one-file-system here.
 	# Read-only ones would fail the rm. Inode 256 is the root of a subvolume.
 	find "$projects/$name" -type d -inum 256 -exec btrfs property set -f {} ro false \; 2>/dev/null || true
 	rm -rf "${projects:?}/$name"
-	userdel "aos-$name" 2>/dev/null || true
-	groupdel "aos-$name" 2>/dev/null || true
+	if id -u "aos-$name" >/dev/null 2>&1; then
+		userdel "aos-$name"
+	fi
+	if getent group "aos-$name" >/dev/null; then
+		groupdel "aos-$name"
+	fi
 	rm -f "$(slice_file "$uid")"
 	systemctl daemon-reload
 	rm -f "$registry/$name.deleting"

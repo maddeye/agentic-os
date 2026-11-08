@@ -35,7 +35,7 @@ write_files:
       set -eux
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y --no-install-recommends btrfs-progs curl ca-certificates
+      apt-get install -y --no-install-recommends btrfs-progs curl ca-certificates nftables
       mkfs.btrfs -L agentos-data /dev/disk/by-id/virtio-agentos-data
       mkdir -p /var/lib/agent-os
       echo 'LABEL=agentos-data /var/lib/agent-os btrfs noatime 0 0' >> /etc/fstab

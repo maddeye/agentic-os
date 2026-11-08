@@ -35,8 +35,8 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 
 | ID | Boundary | Enforced by | Status |
 |---|---|---|---|
-| B1 | Project to project | Separate UIDs, mode `0700` directories, mount and IPC namespaces, `ProtectProc=invisible` | Tested, with two accepted gaps |
-| B2 | Project to host | No capabilities, no new privileges, read-only system paths, private `/run` | Tested |
+| B1 | Project to project | Separate UIDs, mode `0700` directories, mount, IPC, and network namespaces, `ProtectProc=invisible` | Tested |
+| B2 | Project to host | No capabilities, no new privileges, read-only system paths, private `/run`, network namespace, and `nftables` input policy | Tested |
 | B3 | Project to system agent | Separate UID, and `hostd` accepts peers by `SO_PEERCRED` | Design only, Phase 2 |
 | B4 | System agent to root | Typed `hostd` operations, policy, and audit | Design only, Phase 2 |
 | B5 | Network to host | OpenSSH keys over private networking | Design only, Phase 5 |
@@ -51,37 +51,37 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Read another project's IPC objects | T1, T2 | A1 | `PrivateIPC=yes` | `sysv_shm_cross`, `mqueue_cross` |
 | Inspect or signal another project's processes | T1, T2 | A1, A2 | `ProtectProc=invisible`, UID checks | `proc_visible`, `proc_cmdline`, `proc_environ`, `signal` |
 | Connect to another project's GUI socket | T1, T2 | A3 | Socket lives in a mode `0700` directory | `gui_socket` |
+| Reach another project's sockets or ports | T1, T2 | A1, A3 | Per-project network namespace, `nftables` forward policy | `abstract_socket`, `loopback_tcp`, `tests/integration/guest/network.sh` |
+| Reach services on the host, or change the project network | T1, T2 | A4, A6 | Network namespace, `nftables` input policy, no capabilities | `host_loopback_ssh`, `host_uplink_ssh`, `net_admin`, `tests/integration/guest/network.sh` |
 | Modify host files or packages | T1, T2 | A4, A5 | `ProtectSystem=strict`, file modes | `etc_write`, `usr_write`, `boot_write`, `dpkg_db_write`, `apt_install`, `toolchain_write` |
 | Escalate through setuid, sudo, or D-Bus | T1, T2 | A4, A6 | `NoNewPrivileges=yes`, private `/run` | `setuid_binary`, `sudo`, `system_bus`, `capabilities`, `service_start` |
 | Trick root tooling with a swapped project path | T1, T2 | A4, A7 | Root owns each project directory | `replace_own_project_dir` |
 | Run the administrator CLI from a project | T1, T2 | A4, A7 | Root check, no setuid, no sudo | `agentos_cli` |
 | Inject through names or sizes given to the root CLI | T1, T2 through a relayed request | A4 | Strict patterns before any use | `tests/integration/guest/lifecycle.sh` |
-| Keep files or processes after delete, or redirect it with symlinks and subvolumes | T1, T2 | A1, A4 | Stop the slice, kill the UID, remove with no symlink following | `tests/integration/guest/delete.sh` |
-| Inherit another account by name collision | Administrator error | A4 | `create` refuses a user outside the project UID range | `tests/integration/guest/delete.sh` |
+| Keep files or processes after delete, or redirect it with symlinks and subvolumes | T1, T2 | A1, A4 | Mask the slice, stop it, kill the UID, confirm no process remains, remove with no symlink following | `tests/integration/guest/delete.sh` |
+| Inherit another account by name collision | Administrator error | A4 | `create` refuses any account that it did not record allocating | `tests/integration/guest/delete.sh` |
 | Read host credentials or metadata | T1, T2 | A6, A7 | File modes, `ProtectHome=yes`, masked `/var/lib/agent-os` | `shadow`, `ssh_host_key`, `admin_ssh_keys`, `metadata_read`, `snapshots_list` |
 | Change kernel state | T1, T2 | A4, A9 | `Protect*` settings, no capabilities | `dmesg`, `sysctl_write`, `cgroup_write`, `mount_tmpfs`, `block_device` |
 | Exhaust host memory or tasks | T1, T2 | A9 | Per-project slice limits | `memory_limit`, `tasks_limit` |
 
 ## Accepted gaps
 
-Each gap stays open until a named later phase closes it. The suite marks the first three as `gap`, so it fails when the behavior changes.
+Each gap stays open until a later change closes it. The suite marks the first one as `gap`, so it fails when the behavior changes.
 
-1. **Abstract Unix sockets are reachable across projects.** They belong to the network namespace, and projects share one. `abstract_socket` proves the access. Xvfb and other X11 servers listen on abstract sockets by default, so any Phase 4 X11 fallback must start with `-nolisten local` or a separate network namespace. `netns_closes_abstract` shows that a network namespace closes this gap.
-2. **Loopback ports are reachable across projects.** `loopback_tcp` proves the access. A project's development database on `127.0.0.1` is open to every other project. `netns_closes_loopback` shows that a network namespace closes this gap.
-3. **`/etc/passwd` reveals project names.** `passwd_project_names` proves the access. Project names must not contain secrets.
-4. **Network egress is unrestricted.** T1 can send any readable project data to the internet, and can reach the LAN and cloud metadata addresses. Per-project egress policy is future work.
-5. **User namespaces stay enabled.** `user_namespace` requires them, because Chromium and Electron sandboxes need them in Phase 4. They add kernel attack surface for T6.
-6. **The kernel is shared.** T6 defeats the design. Use the `vm` execution profile for workloads that warrant a separate kernel.
-7. **Same-project processes are not isolated from each other.** An agent can read every credential that its project holds. A secret delivered to a project is visible to all of that project's code.
-8. **Package installation scripts run as root.** T4 has full control during installation. Policy and approval in Phase 2 reduce the chance of T4, and they do not contain it.
-9. **A project can fill the shared Btrfs filesystem.** No quota exists until Phase 3. This stops every other project from writing.
-10. **A project can create its own Btrfs subvolumes.** They fall outside parent snapshots, so Phase 3 must decide how to handle them.
-11. **Project output can contain terminal escape sequences.** `run`, `shell`, and `logs` pass the output to the administrator's terminal unfiltered.
-12. **Project output goes to the host journal.** journald's size limits apply, and the journal keeps secrets that a project prints. A project can also push out older host log entries.
+1. **`/etc/passwd` reveals project names.** `passwd_project_names` proves the access. Project names must not contain secrets.
+2. **Network egress is unrestricted.** T1 can send any readable project data to the internet. NAT also lets it reach the LAN and cloud metadata addresses. Per-project egress policy is future work.
+3. **User namespaces stay enabled.** `user_namespace` requires them, because Chromium and Electron sandboxes need them in Phase 4. They add kernel attack surface for T6.
+4. **The kernel is shared.** T6 defeats the design. Use the `vm` execution profile for workloads that warrant a separate kernel.
+5. **Same-project processes are not isolated from each other.** An agent can read every credential that its project holds. A secret delivered to a project is visible to all of that project's code.
+6. **Package installation scripts run as root.** T4 has full control during installation. Policy and approval in Phase 2 reduce the chance of T4, and they do not contain it.
+7. **A project can fill the shared Btrfs filesystem.** No quota exists until Phase 3. This stops every other project from writing.
+8. **A project can create its own Btrfs subvolumes.** They fall outside parent snapshots, so Phase 3 must decide how to handle them.
+9. **Project output can contain terminal escape sequences.** `run`, `shell`, and `logs` pass the output to the administrator's terminal unfiltered.
+10. **Project output goes to the host journal.** journald's size limits apply, and the journal keeps secrets that a project prints. A project can also push out older host log entries.
 
 ## Rules for later phases
 
-- `hostd` listens only on a Unix socket, because every project shares the loopback interface.
+- `hostd` listens only on a Unix socket. File ownership and `SO_PEERCRED` cannot check a network peer.
 - Root-run tooling must not open a project path through a systemd `StandardOutput=file:` setting. PID 1 would follow a symlink that the project planted.
 - Host services must not trust a connection because it came from `127.0.0.1`.
 - Root-run tooling must not follow symlinks inside a project directory.

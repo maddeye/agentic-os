@@ -30,9 +30,30 @@ Bubblewrap is not part of this profile. systemd already builds the namespaces, s
 
 The range stays inside Debian's normal user range (`UID_MIN` 1000, `UID_MAX` 60000), and away from accounts that `adduser` allocates from 1000. It also stays below `SUB_UID_MIN` (100000), so a project UID cannot fall inside the subordinate range of a future rootless container.
 
-`agentos` allocates UIDs from `metadata/next-uid` and never reuses a value. Snapshots and backups can outlive a project, and a reused UID would own the old project's restored files.
+`agentos` allocates UIDs from `metadata/next-uid` and never reuses a value. It records each allocation in `metadata/projects/NAME.creating` before it creates the account. Only a create with that record can resume, so `agentos` never adopts an unrelated `aos-NAME` account. Snapshots and backups can outlive a project, and a reused UID would own the old project's restored files.
 
 Limit `NAME` to 28 characters so that `aos-NAME` fits the 32-character Linux user name limit.
+
+## Project network
+
+Each project has one network namespace, `/run/netns/aos-UID`, shared by all of its commands. `agentos-netns@UID.service` creates it on first use and again after a reboot. Commands in one project reach each other on `127.0.0.1`. Projects cannot reach each other's loopback ports or abstract sockets.
+
+Each project owns one `/30` in `10.213.0.0/16`, calculated from its UID. The host side of the `veth` pair is `.1`, and the project is `.2`. `agentos project inspect` prints the project address.
+
+[`configs/nftables/agentos.nft`](../configs/nftables/agentos.nft) applies this policy to IPv4 and IPv6:
+
+| Traffic | Result |
+|---|---|
+| Project to the internet or LAN | Allowed, with masquerade |
+| Project to another project | Dropped |
+| Project to any host address | Dropped |
+| Host to a project port | Allowed |
+| Internet or LAN to a project | Dropped |
+| Forwarding unrelated to projects | Dropped |
+
+The firewall unit turns on `net.ipv4.ip_forward` after it loads the policy. The last rule keeps the host from acting as a router. A host that must also route other traffic, for example for rootful Docker, needs a changed policy.
+
+Projects have no IPv6 route. DNS uses the upstream servers in `/run/systemd/resolve/resolv.conf`, because the `systemd-resolved` stub listens on the host's loopback.
 
 ## Filesystem layout
 
@@ -69,6 +90,7 @@ The Btrfs subvolume hierarchy stays open until Phase 3. The measured behavior li
 | IPC | `PrivateIPC=yes` | SysV IPC and POSIX queues are private. | Sole control for `sysv_shm_cross` and `mqueue_cross` |
 | Runtime sockets | `TemporaryFileSystem=/run`, `BindReadOnlyPaths=-/run/systemd/resolve` | D-Bus and host sockets are absent, and DNS still works. | Sole control for `system_bus` |
 | Processes | `ProtectProc=invisible` | Other users' processes are hidden. | Sole control for `proc_visible` and `proc_cmdline` |
+| Network | `NetworkNamespacePath`, `Requires`, `After` | Each project has its own interfaces and loopback. | Sole control for `abstract_socket`, `loopback_tcp`, `host_loopback_ssh`, and `host_uplink_ssh` |
 | Kernel | `Protect*`, `SystemCallFilter`, `PrivateDevices` | Kernel interfaces and devices are hidden. | Not run |
 
 `MemoryDenyWriteExecute` stays off, because JIT runtimes such as Node.js need writable and executable memory (`jit_rwx_memory`). `RestrictNamespaces` stays off, because browser sandboxes need user namespaces (`user_namespace`).
@@ -81,5 +103,4 @@ These need a decision before the phase named.
 
 | Question | Recommendation | Needed by |
 |---|---|---|
-| Per-project network namespaces | Adopt them. They close accepted gaps 1 and 2, but need `veth` and NAT setup and a port-forwarding design. | Phase 4, or the first host that runs mutually untrusted projects |
 | Btrfs subvolume hierarchy, compression, and quotas | Benchmark in Phase 3. | Phase 3 |

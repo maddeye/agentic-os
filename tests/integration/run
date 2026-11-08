@@ -15,6 +15,7 @@ step() { # <script> [args...]
 step lifecycle
 step tools
 step limits
+step network
 
 echo "### ssh disconnect"
 # The client holds the session open after starting the command, then dies without a clean exit.

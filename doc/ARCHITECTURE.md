@@ -1117,6 +1117,7 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-08 | `agentos` is a root-only shell CLI with no daemon | Section 4.1 defers a daemon until scripts and systemd units are not enough. systemd already supervises the commands. |
 | 2026-11-08 | Systemd units are named by project UID | Project names can contain hyphens, which mean hierarchy in slice names. |
 | 2026-11-08 | `agentos-project.slice` caps all projects at 85% of RAM and 16384 tasks | Keeps capacity for SSH and host services under project load. |
+| 2026-11-08 | Each project gets a network namespace with `veth`, NAT, and an `nftables` policy | Supersedes the accepted loopback and abstract socket gaps. Egress policy remains future work. See `doc/ISOLATION.md`. |
 | 2026-11-08 | Only `--detach` commands are guaranteed to survive a lost connection, and nothing resumes after reboot | Transient units are not persistent. Data survives. See `doc/CLI.md`. |
 
 ---

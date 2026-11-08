@@ -38,7 +38,7 @@ The command and service names are provisional.
 |---|---|
 | Status of `COMMAND` | `run` completed the command. |
 | 1 | The caller is not root. |
-| 2 | Invalid usage, unknown project, or an existing project with that name. |
+| 2 | Invalid usage, unknown project, an existing project or account with that name, or a process that outlives `delete`. |
 | 127 | `COMMAND` is not on the project's `PATH`. |
 
 ## Command lifetime
@@ -51,5 +51,9 @@ The command and service names are provisional.
 | `delete` | Removed | Stopped | Stopped |
 
 Use `--detach` for any work that must survive a lost connection.
+
+If `delete` fails, run it again. The name stays reserved and the project accepts no commands until a `delete` completes.
+
+Commands in one project share a network namespace and reach each other on `127.0.0.1`. The administrator can reach a project port at the address that `inspect` prints.
 
 A project's commands start with `HOME` set to `home/` and the working directory set to `workspace/`. The `PATH` starts with `home/.local/bin`. The administrator's environment is not passed in.

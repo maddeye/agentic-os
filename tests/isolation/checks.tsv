@@ -18,11 +18,12 @@ dev_shm_cross	1	victim	open	blocked	cat /dev/shm/beta-world
 sysv_shm_cross	1	victim	open	blocked	ipcs -m | grep -q aos-beta
 mqueue_cross	1	victim	open	blocked	test -e /dev/mqueue/beta-q
 
-# Sockets in the shared network namespace
-abstract_socket	6	victim	open	gap	$CONNECT abstract beta-sock
-loopback_tcp	1	victim	open	gap	$CONNECT tcp 45001
-netns_closes_abstract	6	-	blocked	blocked	unshare -Urn $CONNECT abstract beta-sock
-netns_closes_loopback	1	-	blocked	blocked	unshare -Urn $CONNECT tcp 45001
+# Network namespaces
+abstract_socket	6	victim	open	blocked	$CONNECT abstract beta-sock
+loopback_tcp	1	victim	open	blocked	$CONNECT tcp 45001
+host_loopback_ssh	3	root	open	blocked	$CONNECT tcp 22
+host_uplink_ssh	3	root	open	blocked	$CONNECT tcp 10.0.2.15:22
+net_admin	3	root	blocked	blocked	ip addr add 10.99.99.1/32 dev lo || exit 1; ip addr del 10.99.99.1/32 dev lo
 
 # Other projects' processes
 proc_visible	1	victim	open	blocked	test -d /proc/$VICTIM_PID

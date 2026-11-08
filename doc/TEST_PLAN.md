@@ -75,9 +75,11 @@ The last line is `PASS: integration`. The command needs internet access. It test
 - A project-local Node.js and Pi install, with versions pinned in `tests/integration/versions.env`.
 - A full Pi tool-call loop against `stub_model.py`, a local server that needs no credentials.
 - CPU, memory, and task limits for one command, for several commands together, and for all projects together.
+- Project network isolation, internet access, and name resolution.
 - A detached command that outlives a killed SSH client.
 - Data, identities, and tools across a reboot.
-- Deletion with running processes, symlinks, read-only subvolumes, and an interrupted first attempt.
+- Deletion with running processes, symlinks, read-only subvolumes, a failed first attempt, and concurrent command starts.
+- Recovery of a crashed create, and refusal of accounts that `agentos` did not allocate.
 
 ## Regenerate the baseline
 
