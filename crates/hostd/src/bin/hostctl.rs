@@ -14,6 +14,7 @@ const EXIT_AWAITING_APPROVAL: u8 = 3;
 const USAGE: &str = "usage: agentos system status
        agentos system recover
        agentos system package install|remove NAME... --reason TEXT
+       agentos system package upgrade --reason TEXT
        agentos system toolchain install|remove NAME VERSION --reason TEXT
        agentos system change show|approve|reject|apply ID
        agentos system change history";
@@ -105,6 +106,7 @@ fn dispatch(mut args: Vec<String>) -> Option<ExitCode> {
             let names = names.iter().map(ToString::to_string).collect();
             if *verb == "install" { Operation::PackageInstall { names } } else { Operation::PackageRemove { names } }
         }
+        ["package", "upgrade"] => Operation::PackageUpgrade {},
         ["toolchain", "install", name, version] => Operation::ToolchainInstallGlobal { name: name.to_string(), version: version.to_string() },
         ["toolchain", "remove", name, version] => Operation::ToolchainRemoveGlobal { name: name.to_string(), version: version.to_string() },
         _ => return None,

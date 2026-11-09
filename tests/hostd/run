@@ -14,6 +14,7 @@ step() { # <script>
 "$repo/tests/vm/deploy"
 step setup
 step packages
+step upgrade
 step privileges
 step toolchains
 step interrupt

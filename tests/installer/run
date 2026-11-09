@@ -32,7 +32,7 @@ step() { # <script> [args...]
 	"$vm" ssh "sudo $guest/$1.sh ${*:2}"
 }
 copy_tests() {
-	tar -C "$repo" -cf - tests | "$vm" ssh 'sudo mkdir -p /opt/aos-tests && sudo tar -C /opt/aos-tests --no-same-owner -xf - && sudo chmod -R a+rX /opt/aos-tests'
+	tar -C "$repo" -cf - tests .build/package | "$vm" ssh 'sudo mkdir -p /opt/aos-tests && sudo tar -C /opt/aos-tests --no-same-owner -xf - && sudo chmod -R a+rX /opt/aos-tests'
 }
 host_key() { ssh-keyscan -t ed25519 -p 10022 127.0.0.1 2>/dev/null | ssh-keygen -l -f - | cut -d" " -f2; }
 reported_host_key() { grep -a "Host key:" "$log" | tail -n1 | cut -d" " -f4; }
@@ -117,6 +117,9 @@ eq "a key that was not enrolled cannot log in" 255 "$(status_of ssh -i "$strange
 copy_tests
 step installer/guest/installed bios
 step image/guest/first_boot
+step installer/guest/upgrade
+"$vm" down
+step installer/guest/after_upgrade
 "$vm" down
 
 echo "### UEFI: the key comes from a USB stick"

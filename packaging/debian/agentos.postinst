@@ -16,11 +16,14 @@ if [ "$1" = configure ]; then
 		--home-dir /var/lib/agent-os/system-agent --shell /bin/bash agentos-system
 	install_default hostd-policy.json /etc/agent-os/hostd-policy.json
 	install_default storage.conf /etc/agent-os/storage.conf
-	install -d -o root -g root -m 0711 /var/lib/agent-os /var/lib/agent-os/projects
+	install -d -o root -g root -m 0711 /var/lib/agent-os
+	# hostd masks these two from package scripts, so an upgrade through it cannot change them.
+	[ -d /var/lib/agent-os/projects ] || install -d -o root -g root -m 0711 /var/lib/agent-os/projects
+	[ -d /var/lib/agent-os/snapshots ] || install -d -o root -g root -m 0700 /var/lib/agent-os/snapshots
 	# A second enable is harmless.
 	btrfs quota enable /var/lib/agent-os
 	install -d -o root -g root -m 0700 /var/lib/agent-os/metadata /var/lib/agent-os/metadata/projects \
-		/var/lib/agent-os/snapshots /var/lib/agent-os/metadata/hostd /var/lib/agent-os/metadata/hostd/changes
+		/var/lib/agent-os/metadata/hostd /var/lib/agent-os/metadata/hostd/changes
 	install -d -o agentos-system -g agentos-system -m 0700 /var/lib/agent-os/system-agent
 	install -d -o root -g root -m 0755 /opt/agent-os /opt/agent-os/toolchains
 fi

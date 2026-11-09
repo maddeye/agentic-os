@@ -55,6 +55,7 @@ Replies are JSON on standard output. Refusals go to standard error.
 | `agentos system status` | Reports host package state, changes by state, and toolchains. |
 | `agentos system package install NAME... --reason TEXT` | Plans an install. Applies it at once if policy allows. |
 | `agentos system package remove NAME... --reason TEXT` | Plans a removal. |
+| `agentos system package upgrade --reason TEXT` | Plans an upgrade of every installed package. It always needs approval. |
 | `agentos system toolchain install NAME VERSION --reason TEXT` | Plans a global toolchain install from the catalog. |
 | `agentos system toolchain remove NAME VERSION --reason TEXT` | Plans a global toolchain removal. |
 | `agentos system change show ID` | Prints one change. |

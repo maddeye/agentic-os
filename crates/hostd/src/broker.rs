@@ -70,7 +70,7 @@ pub fn authorized(role: Role, request: &Request) -> bool {
 }
 
 fn is_package(operation: &Operation) -> bool {
-    matches!(operation, Operation::PackageInstall { .. } | Operation::PackageRemove { .. })
+    matches!(operation, Operation::PackageInstall { .. } | Operation::PackageRemove { .. } | Operation::PackageUpgrade {})
 }
 
 fn still_matches(change: &Change) -> bool {
@@ -103,6 +103,7 @@ fn recovery_reference(operation: &Operation) -> String {
     match operation {
         Operation::PackageInstall { names } => format!("agentos system package remove {}", names.join(" ")),
         Operation::PackageRemove { names } => format!("agentos system package install {}", names.join(" ")),
+        Operation::PackageUpgrade {} => "no single command undoes an upgrade. impact.actions lists each previous version.".to_string(),
         Operation::ToolchainInstallGlobal { name, version } => format!("agentos system toolchain remove {name} {version}"),
         Operation::ToolchainRemoveGlobal { name, version } => format!("agentos system toolchain install {name} {version}"),
     }
@@ -156,7 +157,7 @@ impl Broker {
             "approved": ids(State::Approved),
             "applying": ids(State::Applying),
             "toolchains": toolchain::list(),
-            "reboot_required": std::path::Path::new("/run/reboot-required").exists(),
+            "reboot_required": apt::reboot_required(),
         }))
     }
 
