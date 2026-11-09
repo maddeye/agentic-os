@@ -876,7 +876,7 @@ cmd_storage_check() {
 
 if [[ "${1:-}" == system ]]; then
 	shift
-	exec /usr/local/sbin/agentos-hostctl "$@"
+	exec /usr/sbin/agentos-hostctl "$@"
 fi
 
 if [[ "$EUID" -ne 0 ]]; then

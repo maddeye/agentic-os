@@ -1,6 +1,6 @@
 # `agentos` command reference
 
-`agentos project` is the administrator CLI for project lifecycle. It runs as root. Project agents cannot run it. `packaging/install.sh` installs it to `/usr/local/sbin/agentos`.
+`agentos project` is the administrator CLI for project lifecycle. It runs as root. Project agents cannot run it. The [package](#package) installs it to `/usr/sbin/agentos`.
 
 `agentos system` is the client for [`hostd`](HOSTD.md). The administrator and the system agent can use it.
 
@@ -101,3 +101,17 @@ Commands in one project share a network namespace and reach each other on `127.0
 A graphical session that `agentos project gui NAME start` created lasts until `stop`, `agentos project stop`, or a reboot. A session that a project command started with `agentos-gui start` ends with that command.
 
 A project's commands start with `HOME` set to `home/` and the working directory set to `workspace/`. The `PATH` starts with `home/.local/bin`, followed by any selected toolchains. The administrator's environment is not passed in.
+
+## Package
+
+`packaging/build` writes `.build/package/agentos_VERSION_amd64.deb`. Install it with `apt-get install ./agentos_VERSION_amd64.deb`. `/var/lib/agent-os` must be on Btrfs. On any other filesystem the install stops before it unpacks a file.
+
+| Action | What happens |
+|---|---|
+| Install | Creates `agentos-system` and the directories under `/var/lib/agent-os` and `/opt/agent-os`, enables Btrfs quotas, copies the default policy and `storage.conf` if they are absent, and starts the firewall, the two `hostd` sockets, and the storage timer. |
+| Upgrade | Keeps running projects, their network, and any existing policy or `storage.conf`. A unit that the administrator disabled stays disabled. The firewall reloads in one transaction, and `hostd` runs the new binary on its next connection. |
+| Interrupted install or upgrade | `dpkg --configure -a` finishes the work. |
+| Remove | Refused while any project exists. Otherwise stops the services, closes the sockets, and removes the firewall policy. Project data, snapshots, toolchains, `/etc/agent-os`, and `agentos-system` stay. |
+| Purge | Also deletes `/etc/agent-os`. Everything else that Remove kept stays. |
+
+A refused `dpkg -r` leaves the package installed, with the status `ri`. The next install of the package clears it.

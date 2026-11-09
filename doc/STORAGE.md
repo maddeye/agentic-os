@@ -1,6 +1,6 @@
 # Storage design
 
-Status: implemented by [`agentos`](CLI.md) for Phase 3. `tests/storage/run` passes on Debian 13.7 with kernel 6.12 and btrfs-progs 6.14. `/var/lib/agent-os` must be on Btrfs, and `packaging/install.sh` enables quotas on it.
+Status: implemented by [`agentos`](CLI.md) for Phase 3. `tests/storage/run` passes on Debian 13.7 with kernel 6.12 and btrfs-progs 6.14. `/var/lib/agent-os` must be on Btrfs, and the [package](CLI.md#package) enables quotas on it.
 
 ## Subvolumes
 

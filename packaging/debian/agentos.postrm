@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# Project data, toolchains, and the system agent stay. Only `agentos project delete`
+# removes project data, and files can outlive an account name.
+if [ "$1" = purge ]; then
+	rm -rf /etc/agent-os
+fi
+
+#DEBHELPER#

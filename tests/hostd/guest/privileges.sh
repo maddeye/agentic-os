@@ -5,18 +5,18 @@ agent_uid=$(id -u aos-alpha)
 sock=/run/agentos/hostd.sock
 
 # Separation from a project.
-eq "project cannot use the client" 1 "$(status_of agentos project run alpha -- /usr/local/sbin/agentos system status)"
+eq "project cannot use the client" 1 "$(status_of agentos project run alpha -- /usr/sbin/agentos system status)"
 eq "project cannot see the socket" 1 "$(status_of agentos project run alpha -- test -e "$sock")"
 
 # A caller that passes the socket's group check still has the wrong UID.
 through_group() { setpriv --reuid="$agent_uid" --regid=agentos-system --clear-groups -- "$@"; }
 before=$(audited denied "\"uid\":$agent_uid")
-eq "project UID with the socket group is refused" 1 "$(status_of through_group /usr/local/sbin/agentos-hostctl status)"
-eq "the refusal comes from hostd" 1 "$(through_group /usr/local/sbin/agentos-hostctl status 2>&1 | grep -c '^agentos: denied')"
+eq "project UID with the socket group is refused" 1 "$(status_of through_group /usr/sbin/agentos-hostctl status)"
+eq "the refusal comes from hostd" 1 "$(through_group /usr/sbin/agentos-hostctl status 2>&1 | grep -c '^agentos: denied')"
 eq "the refused attempt is audited" 1 "$(( $(audited denied "\"uid\":$agent_uid") > before ))"
 forged='{"request":"change_approve","id":1,"caller":{"uid":0}}'
 eq "forged identity is rejected as malformed" malformed "$(sys python3 /opt/aos-tests/tests/hostd/guest/send.py "$forged" | field code)"
-eq "project cannot apply through the group" 1 "$(status_of through_group /usr/local/sbin/agentos-hostctl change apply 1)"
+eq "project cannot apply through the group" 1 "$(status_of through_group /usr/sbin/agentos-hostctl change apply 1)"
 
 # The contract has no general command.
 for body in '{"request":"run_as_root","command":"id"}' 'not json' '' '{"request":"change_plan","reason":"x","operation":{"type":"shell","command":"id"}}'; do

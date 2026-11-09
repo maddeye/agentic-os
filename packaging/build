@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests and builds the Rust binaries with Debian's own compiler. Output goes to .build/bin.
+# Tests the Rust code and builds the agentos package with Debian's own toolchain.
+# The package goes to .build/package.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo/tests/vm/image.lock"
@@ -9,11 +10,23 @@ out=$repo/.build
 # CI restores this image from a cache that is keyed on the Dockerfile.
 [[ -n "${AOS_BUILD_IMAGE_LOADED:-}" ]] || docker build -q --build-arg "APT_SNAPSHOT=$APT_SNAPSHOT" -t "$image" -f "$repo/packaging/build.Dockerfile" "$repo/packaging" >/dev/null
 mkdir -p "$out/cargo" "$out/bin"
-cargo() {
-	docker run --rm --network host --user "$(id -u):$(id -g)" -v "$repo:$repo" -w "$repo/crates/hostd" \
-		-e "CARGO_HOME=$out/cargo" -e "CARGO_TARGET_DIR=$out/target" "$image" cargo "$@"
+in_image() { # <directory> <command...>
+	local dir=$1
+	shift
+	docker run --rm --network host --user "$(id -u):$(id -g)" -v "$repo:$repo" -w "$dir" \
+		-e "HOME=$out" -e "CARGO_HOME=$out/cargo" -e "CARGO_TARGET_DIR=$out/target" "$image" "$@"
 }
+cargo() { in_image "$repo/crates/hostd" cargo "$@"; }
 [[ -f "$repo/crates/hostd/Cargo.lock" ]] || cargo generate-lockfile
 cargo test --locked --quiet
 cargo build --locked --release --quiet
 install -m 0755 "$out/target/release/agentos-hostd" "$out/target/release/agentos-hostctl" "$out/bin/"
+
+# dpkg-buildpackage writes into its source tree and beside it, so it gets a copy.
+source=$out/package/source
+rm -rf "$out/package"
+mkdir -p "$source"
+cp -r "$repo/bin" "$repo/configs" "$repo/packaging/debian" "$source/"
+cp -r "$out/bin" "$source/rust"
+in_image "$source" dpkg-buildpackage -b -us -uc >/dev/null
+rm -rf "$source"

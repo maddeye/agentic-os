@@ -989,7 +989,7 @@ Use typed checks or unprivileged execution whenever possible.
 
 ### Phase 5 — Distribution Packaging
 
-- [ ] Package Agent OS services and configuration as `.deb` packages.
+- [x] Package Agent OS services and configuration as `.deb` packages.
 - [ ] Build a VM image.
 - [ ] Automate boot and installation tests.
 - [ ] Create a bootable installer ISO.
@@ -1125,6 +1125,10 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-08 | One supervisor per session owns its state, and the viewer connection provides the input devices | Sway's headless seat has no pointer or keyboard until a virtual device attaches, and a new device for each action loses keys. |
 | 2026-11-08 | Remote viewing is an RFB byte stream through `ssh` and `agentos project gui ... view` | SSH keys authenticate the viewer, and nothing listens on a port. |
 | 2026-11-08 | Only `--detach` commands are guaranteed to survive a lost connection, and nothing resumes after reboot | Transient units are not persistent. Data survives. See `doc/CLI.md`. |
+| 2026-11-09 | Agent OS ships as one `agentos` package built with debhelper, and `install.sh` is gone | Every suite now tests what a host installs. Packages cannot own `/usr/local`, so the programs moved to `/usr/sbin` and `/usr/bin`. The components have no separate install need yet. |
+| 2026-11-09 | Upgrades reload the firewall and restart nothing | Each `agentos-netns@` instance requires the firewall, so a restart would delete the network of every running project. |
+| 2026-11-09 | The default policy and `storage.conf` are copied once and are not dpkg conffiles | The administrator owns them after the first install. A changed conffile would stop a non-interactive upgrade with a prompt. |
+| 2026-11-09 | The package refuses removal while any project exists | Removal would strand each project's account, slice, and namespace. The maintainer script is the one place that covers both `apt` and `hostd`. |
 
 ---
 

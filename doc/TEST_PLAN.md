@@ -95,7 +95,7 @@ The last line is `PASS: hostd`. The command needs internet access. It tests thes
 - Two global Node.js versions selected per project, read-only access, bad digests, and failed checks.
 - A broker killed during a package script and during a toolchain install, a concurrent request, and a power cut.
 
-`packaging/build` runs the Rust unit tests and builds the binaries with Debian's compiler in a pinned container. Every VM deployment runs it, so a failing unit test stops the suites.
+`packaging/build` runs the Rust unit tests and builds the binaries and the `agentos` package with Debian's toolchain in a pinned container. Every VM deployment runs it, so a failing unit test stops the suites.
 
 ## Run the storage suite
 
@@ -129,6 +129,20 @@ The last line is `PASS: gui`. The command needs internet access, because it inst
 - Each way that a session ends: `stop`, `agentos project stop`, the starting command exiting, a killed supervisor, and `delete`.
 
 `tests/gui/benchmark` prints the measurements that [GUI.md](GUI.md#software-rendering-benchmark) records.
+
+## Run the packaging suite
+
+```bash
+tests/packaging/run
+```
+
+The last line is `PASS: packaging`. `tests/vm/deploy` already installs the package for every suite, and this one tests the package itself through `dpkg` and `apt-get`:
+
+- A refused removal while a project exists.
+- An upgrade under a live project, which keeps its process, network, disk limit, administrator edits, and disabled units, and still applies a new firewall policy.
+- A `configure` killed partway through, then finished by `dpkg --configure -a`.
+- Remove, reinstall, and purge, including that a UID is not reused and the firewall is gone.
+- A refused install off Btrfs that unpacks nothing, with an install on Btrfs as its control.
 
 ## Run the suites in GitHub Actions
 

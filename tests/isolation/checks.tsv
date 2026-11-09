@@ -50,12 +50,12 @@ replace_own_project_dir	3	root	blocked	blocked	mv $ALPHA_ROOT/workspace $ALPHA_R
 # Host-maintenance broker
 hostd_socket	3	root	blocked	blocked	$CONNECT unix /run/agentos/hostd.sock
 hostd_admin_socket	3	root	blocked	blocked	$CONNECT unix /run/agentos/hostd-admin.sock
-hostd_client	3	root	blocked	blocked	/usr/local/sbin/agentos system status
+hostd_client	3	root	blocked	blocked	/usr/sbin/agentos system status
 hostd_state_read	3	root	blocked	blocked	cd /var/lib/agent-os/metadata/hostd
 hostd_policy_write	2	root	blocked	blocked	touch /etc/agent-os/hostd-policy.json
 
 # Host credentials and state
-agentos_cli	3	root	blocked	blocked	/usr/local/sbin/agentos project list
+agentos_cli	3	root	blocked	blocked	/usr/sbin/agentos project list
 shadow	3	root	blocked	blocked	cat /etc/shadow
 ssh_host_key	3	root	blocked	blocked	cat /etc/ssh/ssh_host_ed25519_key
 admin_ssh_keys	3	root	blocked	blocked	cat /home/admin/.ssh/authorized_keys

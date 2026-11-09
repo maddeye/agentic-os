@@ -1,0 +1,32 @@
+#!/bin/sh
+set -e
+
+# The administrator owns these after the first install. The rename means a kill
+# cannot leave a truncated file that later runs would preserve.
+install_default() { # <file in defaults> <target>
+	[ ! -e "$2" ] || return 0
+	install -D -m 0644 "/usr/share/agent-os/defaults/$1" "$2.new"
+	sync "$2.new"
+	mv "$2.new" "$2"
+}
+
+if [ "$1" = configure ]; then
+	# The name cannot collide with a project account, which always starts with aos-.
+	id -u agentos-system >/dev/null 2>&1 || useradd --system --user-group --no-create-home \
+		--home-dir /var/lib/agent-os/system-agent --shell /bin/bash agentos-system
+	install_default hostd-policy.json /etc/agent-os/hostd-policy.json
+	install_default storage.conf /etc/agent-os/storage.conf
+	install -d -o root -g root -m 0711 /var/lib/agent-os /var/lib/agent-os/projects
+	# A second enable is harmless.
+	btrfs quota enable /var/lib/agent-os
+	install -d -o root -g root -m 0700 /var/lib/agent-os/metadata /var/lib/agent-os/metadata/projects \
+		/var/lib/agent-os/snapshots /var/lib/agent-os/metadata/hostd /var/lib/agent-os/metadata/hostd/changes
+	install -d -o agentos-system -g agentos-system -m 0700 /var/lib/agent-os/system-agent
+	install -d -o root -g root -m 0755 /opt/agent-os /opt/agent-os/toolchains
+fi
+
+#DEBHELPER#
+
+if [ "$1" = configure ] && systemctl is-active --quiet agentos-firewall.service; then
+	systemctl reload agentos-firewall.service
+fi

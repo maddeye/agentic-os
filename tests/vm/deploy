@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Resets the VM and installs this checkout into it. Test files go to /opt/aos-tests.
+# Resets the VM and installs the package built from this checkout. Test files go to /opt/aos-tests.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 vm="$repo/tests/vm/vm"
 "$repo/packaging/build"
 "$vm" reset
 "$vm" up
-tar -C "$repo" -cf - bin configs packaging tests .build/bin \
+tar -C "$repo" -cf - tests .build/package \
 	| "$vm" ssh 'sudo mkdir -p /opt/aos-tests && sudo tar -C /opt/aos-tests --no-same-owner -xf - && sudo chmod -R a+rX /opt/aos-tests'
-"$vm" ssh 'sudo /opt/aos-tests/packaging/install.sh'
+"$vm" ssh 'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends /opt/aos-tests/.build/package/agentos_*.deb >/dev/null'

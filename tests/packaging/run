@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Runs the package lifecycle test in a freshly reset VM.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+
+"$repo/tests/vm/deploy"
+"$vm" ssh "sudo /opt/aos-tests/tests/packaging/guest/lifecycle.sh"
+"$vm" down
+echo "PASS: packaging"
