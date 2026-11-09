@@ -8,7 +8,7 @@ Rules-Requires-Root: no
 
 Package: agentos
 Architecture: amd64
-Depends: ${shlibs:Depends}, ${misc:Depends}, apt, btrfs-progs, ca-certificates, curl, iproute2, nftables, passwd, procps, systemd, util-linux, xz-utils
+Depends: ${shlibs:Depends}, ${misc:Depends}, apt, btrfs-progs, ca-certificates, curl, iproute2, libatomic1, nftables, passwd, procps, systemd, util-linux, xz-utils
 Description: headless workstation base for autonomous coding agents
  Runs each project as its own Linux identity with private files, a network
  namespace, resource limits, snapshots, and on-demand graphical sessions.

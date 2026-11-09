@@ -1,0 +1,93 @@
+#!/bin/bash
+# Runs as root inside the builder VM. Writes a bootable Agent OS system onto the builder's empty second disk.
+set -euo pipefail
+snapshot=$1
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+deb=$(echo /opt/aos-image/.build/package/agentos_*.deb)
+disk=/dev/disk/by-id/virtio-agentos-data
+root=$disk-part2
+data=$disk-part3
+target=/mnt/image
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -q >/dev/null
+apt-get install -y -q --no-install-recommends mmdebstrap gpg >/dev/null
+
+umount /var/lib/agent-os
+wipefs -q -a "$disk"
+# The types let systemd-repart tell the data partition from the root.
+sfdisk -q "$disk" <<PARTITIONS
+label: gpt
+size=1MiB, type=21686148-6449-6E6F-744E-656564454649, name=bios
+size=8GiB, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=agentos-root
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=agentos-data
+PARTITIONS
+udevadm settle
+mkfs.ext4 -q -L agentos-root "$root"
+mkfs.btrfs -q -L agentos-data "$data"
+mkdir -p "$target"
+mount "$root" "$target"
+
+# The bootstrap uses http because the new system has no CA bundle yet. apt still verifies signatures.
+archive=http://snapshot.debian.org/archive
+mmdebstrap --mode=root --variant=minbase --skip=output/mknod \
+	--include="$(paste -sd, "$here/packages")" \
+	trixie "$target" \
+	"deb [check-valid-until=no] $archive/debian/$snapshot trixie main" \
+	"deb [check-valid-until=no] $archive/debian/$snapshot trixie-updates main" \
+	"deb [check-valid-until=no] $archive/debian-security/$snapshot trixie-security main"
+
+cleanup() { umount -R "$target/dev" "$target/proc" "$target/sys" "$target/var/lib/agent-os" 2>/dev/null || true; }
+trap cleanup EXIT
+for mount in dev proc sys; do
+	mount --rbind "/$mount" "$target/$mount"
+done
+
+# The preinst and postinst need the real data filesystem.
+mkdir -p "$target/var/lib/agent-os"
+mount "$data" "$target/var/lib/agent-os"
+rm -f "$target/etc/resolv.conf"
+cp -L /etc/resolv.conf "$target/etc/resolv.conf"
+cp "$deb" "$target/tmp/"
+chroot "$target" apt-get update -q >/dev/null
+chroot "$target" apt-get install -y -q --no-install-recommends "/tmp/$(basename "$deb")" >/dev/null
+rm "$target/tmp/$(basename "$deb")"
+chroot "$target" apt-get clean
+rm -rf "$target"/var/lib/apt/lists/*
+
+cp -r "$here/rootfs/." "$target/"
+chmod 0440 "$target/etc/sudoers.d/agentos-admin"
+chroot "$target" useradd --create-home --groups sudo --shell /bin/bash admin
+chroot "$target" systemctl enable --quiet systemd-networkd systemd-resolved
+ln -sf ../run/systemd/resolve/stub-resolv.conf "$target/etc/resolv.conf"
+# It fails on every boot without a vsock device, and with one it opens an SSH path nothing here declares.
+mkdir -p "$target/etc/systemd/system-generators"
+ln -s /dev/null "$target/etc/systemd/system-generators/systemd-ssh-generator"
+chroot "$target" grub-install --target=i386-pc "$disk"
+chroot "$target" update-grub
+
+# systemd treats an empty machine ID as not a first boot, and Debian's sshd-keygen.service
+# runs only on a first boot. That service makes each machine's host keys.
+rm -f "$target"/etc/ssh/ssh_host_*
+echo uninitialized > "$target/etc/machine-id"
+
+# Hosts follow current Debian. The snapshot only pins what the image was built from.
+rm -f "$target/etc/apt/sources.list"
+cat > "$target/etc/apt/sources.list.d/debian.sources" <<SOURCES
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: https://security.debian.org/debian-security
+Suites: trixie-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+SOURCES
+
+chroot "$target" dpkg-query -W -f '${Package} ${Version}\n' > /opt/aos-image/packages.txt
+cleanup
+trap - EXIT
+umount "$target"

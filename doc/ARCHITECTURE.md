@@ -990,8 +990,8 @@ Use typed checks or unprivileged execution whenever possible.
 ### Phase 5 — Distribution Packaging
 
 - [x] Package Agent OS services and configuration as `.deb` packages.
-- [ ] Build a VM image.
-- [ ] Automate boot and installation tests.
+- [x] Build a VM image.
+- [x] Automate boot and installation tests.
 - [ ] Create a bootable installer ISO.
 - [ ] Implement secure administrator enrollment.
 - [ ] Test clean installation.
@@ -1129,6 +1129,11 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-09 | Upgrades reload the firewall and restart nothing | Each `agentos-netns@` instance requires the firewall, so a restart would delete the network of every running project. |
 | 2026-11-09 | The default policy and `storage.conf` are copied once and are not dpkg conffiles | The administrator owns them after the first install. A changed conffile would stop a non-interactive upgrade with a prompt. |
 | 2026-11-09 | The package refuses removal while any project exists | Removal would strand each project's account, slice, and namespace. The maintainer script is the one place that covers both `apt` and `hostd`. |
+| 2026-11-09 | The VM image is built with `mmdebstrap` inside the test VM | A minimal bootstrap proves the package's `Depends`, and the build gets root and a real block device without privileged containers on the dev machine. The installer ISO can still choose differently, so section 14 keeps the question open. |
+| 2026-11-09 | The image has separate root and data partitions, and only the data partition grows | A project that fills the Btrfs filesystem cannot fill the root. `systemd-repart` and `x-systemd.growfs` do the growth, so no script runs at boot. |
+| 2026-11-09 | The image holds no login, and the first administrator key arrives as a systemd boot credential | No default password or baked key can leak with the image. This adds no new first-boot program. Interactive enrollment for the installer is still open. |
+| 2026-11-09 | The image boots with BIOS only | The test VM's firmware proves it. UEFI arrives with the installer, where it needs real testing, and the bootloader question in section 14 stays open. |
+| 2026-11-09 | The image is built from the APT snapshot and then points at live Debian | The snapshot makes the contents repeatable. A host pinned to it would never receive a security update. |
 
 ---
 

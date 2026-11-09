@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Builds the VM image and boots the artifact itself. No step installs anything first.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+guest=/opt/aos-tests/tests/image/guest
+source "$repo/tests/integration/guest/lib.sh"
+
+step() { # <script>
+	echo "### $1"
+	"$vm" ssh "sudo $guest/$1.sh"
+}
+host_key() { ssh-keyscan -t ed25519 -p 10022 127.0.0.1 2>/dev/null | cut -d" " -f3; }
+machine_id() { "$vm" ssh 'cat /etc/machine-id'; }
+copy_tests() {
+	tar -C "$repo" -cf - tests | "$vm" ssh 'sudo mkdir -p /opt/aos-tests && sudo tar -C /opt/aos-tests --no-same-owner -xf - && sudo chmod -R a+rX /opt/aos-tests'
+}
+
+"$repo/packaging/build-image"
+image=$(echo "$repo"/.build/image/agentos_*.qcow2)
+eq "the published checksum matches" 0 "$(cd "$(dirname "$image")" && status_of sha256sum -c "$(basename "$image").sha256")"
+
+echo "### first boot without a key"
+"$vm" image "$image" --no-key
+unenrolled_key=$(host_key)
+eq "without a key, nobody can log in" 255 "$(status_of ssh -i "$repo/.vm/id_ed25519" -p 10022 -o BatchMode=yes -o ConnectTimeout=3 \
+	-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null admin@127.0.0.1 true)"
+
+echo "### first boot with a key"
+"$vm" image "$image"
+first_key=$(host_key)
+first_id=$(machine_id)
+eq "the same key can log in once it is enrolled" 0 "$(status_of "$vm" ssh true)"
+eq "each machine generates its own host key" 0 "$([[ "$first_key" != "$unenrolled_key" && -n "$first_key" ]]; echo $?)"
+copy_tests
+step first_boot
+
+echo "### power cut"
+"$vm" ssh 'sudo sync'
+"$vm" kill
+"$vm" up
+eq "the machine ID survives the power cut" "$first_id" "$(machine_id)"
+step after_power_cut
+
+echo "### a second machine from the same image"
+"$vm" image "$image"
+eq "the second machine has its own host key" 0 "$([[ "$(host_key)" != "$first_key" ]]; echo $?)"
+eq "the second machine has its own machine ID" 0 "$([[ "$(machine_id)" != "$first_id" ]]; echo $?)"
+"$vm" down
+finish
+echo "PASS: image"

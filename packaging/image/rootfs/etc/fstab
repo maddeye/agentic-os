@@ -1,0 +1,2 @@
+LABEL=agentos-root / ext4 errors=remount-ro 0 1
+LABEL=agentos-data /var/lib/agent-os btrfs noatime,x-systemd.growfs 0 0

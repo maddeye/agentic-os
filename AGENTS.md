@@ -91,6 +91,7 @@ Finish with every full suite your change touches:
 | `crates/hostd`, policy, toolchain catalog | `tests/hostd/run` | 4 |
 | `bin/agentos-gui`, `configs/gui/packages` | `tests/gui/run` | 5 |
 | `packaging/` | `tests/packaging/run` | not yet measured |
+| `packaging/image`, `packaging/build-image`, the `vm image` verb | `tests/image/run` | not yet measured |
 | `tests/vm/` | `tests/vm/test-lifecycle` | 2 |
 
 Most of these outlast a default command timeout, so run them in the background. A suite is done when it exits 0. All except isolation also end on a `PASS:` line.

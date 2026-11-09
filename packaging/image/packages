@@ -1,0 +1,13 @@
+dbus
+e2fsprogs
+grub-pc
+initramfs-tools
+kmod
+linux-image-amd64
+openssh-server
+sudo
+systemd-repart
+systemd-resolved
+systemd-sysv
+systemd-timesyncd
+udev
