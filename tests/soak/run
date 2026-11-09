@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Runs unattended project agents in a freshly reset VM for DURATION seconds and copies the results out.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+vm="$repo/tests/vm/vm"
+guest=/opt/aos-tests/tests/soak/guest
+out="$repo/.vm/results/soak-$(date -u +%Y%m%dT%H%M%SZ)"
+duration=${1:-3600}
+[[ "$duration" =~ ^[0-9]+$ ]] && (( duration >= 360 )) || { echo "usage: $0 [SECONDS, at least 360]" >&2; exit 2; }
+
+step() { # <script> [args...]
+	echo "### $1"
+	"$vm" ssh "sudo $guest/$1.sh ${*:2}"
+}
+
+"$repo/tests/vm/deploy"
+mkdir -p "$out"
+step setup "$duration"
+
+# Each tick arrives over SSH from outside the VM, so a host that stops answering fails the run.
+echo "### ticks for $duration seconds"
+ticks=0
+failed=0
+end=$((SECONDS + duration))
+while (( SECONDS < end )); do
+	started=$SECONDS
+	ticks=$((ticks + 1))
+	echo "### tick $ticks at ${started}s" >> "$out/ticks.log"
+	if ! timeout 120 "$vm" ssh "sudo $guest/tick.sh" >> "$out/ticks.log" 2>&1; then
+		failed=$((failed + 1))
+		echo "FAIL: tick $ticks"
+	fi
+	spent=$((SECONDS - started))
+	(( spent >= 60 )) || sleep $((60 - spent))
+done
+
+status=0
+step verify "$duration" | tee "$out/verify.log" || status=1
+"$vm" ssh 'sudo tar -C /var/tmp/aos-soak -cf - .' | tar -C "$out" -xf -
+echo "results: $out"
+echo "ticks=$ticks failed=$failed"
+(( status == 0 && failed == 0 )) || exit 1
+"$vm" down
+echo "PASS: soak"

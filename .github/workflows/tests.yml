@@ -68,6 +68,8 @@ jobs:
             command: tests/image/run
           - name: installer
             command: tests/installer/run
+          - name: soak
+            command: tests/soak/run 360
     name: ${{ matrix.name }}
     env:
       AOS_BUILD_IMAGE_LOADED: "1"

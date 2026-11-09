@@ -1,6 +1,6 @@
 # Agent OS threat model
 
-Status: Phase 5 in progress, reviewed 2026-11-09. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
+Status: Phase 5 complete, reviewed 2026-11-09. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
 
 Check names in this document are rows in [`tests/isolation/checks.tsv`](../tests/isolation/checks.tsv). The [isolation design](ISOLATION.md) explains the controls.
 

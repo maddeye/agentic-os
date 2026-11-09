@@ -180,6 +180,35 @@ The last line is `PASS: installer`. It builds the ISO and answers the installer 
 - A destroyed root, a power cut during its repair, and a repair that finishes. Accounts, UIDs, limits, data, snapshots, and the audit log survive, and the toolchain installs again. A repair of an unreadable data partition stops without changing anything.
 - Under UEFI from a USB stick, with the key read from a second stick. The medium is large enough to qualify and still is not offered, and neither stick can be chosen.
 
+## Run the soak suite
+
+```bash
+tests/soak/run [SECONDS]
+```
+
+The last line is `PASS: soak`. `SECONDS` defaults to 3600 and must be at least 360. Results go to `.vm/results/soak-TIMESTAMP/`. Three projects, `one`, `two`, and `three`, each run Pi in a detached loop against a local stub model. Each turn writes a file and records its hash in a ledger. A fourth project, `noisy`, has tight limits.
+
+Once a minute, a tick arrives over SSH from outside the VM. A tick that fails, or a host that does not answer, fails the run:
+
+- Each project cannot read another project's file, and the owner can.
+- Each agent and model is still running.
+- Each project takes a snapshot and prunes under load.
+- `hostd` answers.
+- `noisy` overruns its memory limit, overruns its process limit, and spins the CPU.
+
+After the agents finish, the suite checks that:
+
+- Each project completed at least one turn each minute, without a problem, and its files match the ledger.
+- Each project kept five automatic snapshots, and the oldest one restores to an earlier ledger.
+- No project task and no broker process remains, the task count did not grow, and disk growth stayed under 2 GiB.
+- Available memory, after dropping caches, is within 256 MiB of the idle baseline.
+- The kernel log has no fault. `noisy` hit its memory limit, and no other project lost a process to memory.
+- No unit failed, and `delete` leaves no project and no account.
+
+The suite does not reboot during the run, because a reboot does not resume commands. `tests/integration/run` covers reboots, and its `limits` step covers memory pressure on the whole project slice.
+
+One run on 2026-11-09 lasted 3600 seconds in the [baseline](BASELINE.md) VM, with 4 vCPUs and 4 GiB of RAM. It passed all 60 ticks and completed 2060 harness turns. Available memory stayed at 3376 MiB or more, and returned to 3561 MiB from an idle baseline of 3580 MiB. Disk use grew by 259 MiB. `noisy` hit its memory limit 60 times, and no other project lost a process.
+
 ## Run the suites in GitHub Actions
 
 `.github/workflows/tests.yml` runs only when you start it, because each run uses about 29 minutes of the private repository's Actions allowance. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.

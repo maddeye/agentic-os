@@ -93,6 +93,7 @@ Finish with every full suite your change touches:
 | `packaging/` | `tests/packaging/run` | not yet measured |
 | `packaging/image`, `packaging/build-image`, the `vm image` verb | `tests/image/run` | not yet measured |
 | `packaging/image`, `packaging/build-iso`, the `vm installer` verb | `tests/installer/run` | not yet measured |
+| Anything that can affect long-running projects | `tests/soak/run` (one hour) or `tests/soak/run 360` | not yet measured |
 | `tests/vm/` | `tests/vm/test-lifecycle` | 2 |
 
 Most of these outlast a default command timeout, so run them in the background. A suite is done when it exits 0. All except isolation also end on a `PASS:` line.
@@ -132,6 +133,7 @@ Read the one that covers your change before you edit:
 - [STORAGE.md](doc/STORAGE.md) covers subvolumes, snapshots, quotas, and backups.
 - [GUI.md](doc/GUI.md) covers graphical sessions, capture, and remote viewing.
 - [CLI.md](doc/CLI.md) covers `agentos` commands.
+- [ADMINISTRATION.md](doc/ADMINISTRATION.md) covers installing and maintaining a host.
 - [TEST_PLAN.md](doc/TEST_PLAN.md) covers VM commands and what each suite proves.
 
 Keep them true in the same change:
