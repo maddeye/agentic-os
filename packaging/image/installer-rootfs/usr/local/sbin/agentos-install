@@ -146,7 +146,6 @@ size=256MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=agentos-efi
 size=8GiB, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=agentos-root
 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=agentos-data
 PARTITIONS
-	udevadm settle
 }
 
 install_system() {
@@ -156,6 +155,8 @@ install_system() {
 	else
 		write_partition_table
 	fi
+	# Any write to the whole disk makes udev reread its table, and the partitions vanish while it does.
+	udevadm settle
 	local efi root data
 	efi=$(partition 2)
 	root=$(partition 3)
