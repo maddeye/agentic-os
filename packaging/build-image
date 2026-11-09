@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Builds the Agent OS VM image from the pinned APT snapshot and the package from this checkout.
+# It needs root and a block device, so the test VM does the work. The image goes to .build/image.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+vm="$repo/tests/vm/vm"
+source "$repo/tests/vm/image.lock"
+out=$repo/.build/image
+
+"$repo/packaging/build"
+name=$(basename "$repo"/.build/package/agentos_*.deb .deb)
+"$vm" reset
+"$vm" up
+tar -C "$repo" -cf - packaging/image .build/package \
+	| "$vm" ssh 'sudo mkdir -p /opt/aos-image && sudo tar -C /opt/aos-image --no-same-owner -xf -'
+"$vm" ssh "sudo bash /opt/aos-image/packaging/image/build-guest $APT_SNAPSHOT"
+mkdir -p "$out"
+"$vm" ssh 'cat /opt/aos-image/packages.txt' > "$out/$name.packages.tmp"
+"$vm" down
+"$vm" export-data "$repo/.vm/run/$name.qcow2"
+# The rename publishes the image only after every step above has succeeded.
+mv "$repo/.vm/run/$name.qcow2" "$out/$name.qcow2.tmp"
+mv "$out/$name.packages.tmp" "$out/$name.packages"
+mv "$out/$name.qcow2.tmp" "$out/$name.qcow2"
+(cd "$out" && sha256sum "$name.qcow2" > "$name.qcow2.sha256")
+echo "image: $out/$name.qcow2"

@@ -39,7 +39,7 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | B2 | Project to host | No capabilities, no new privileges, read-only system paths, private `/run`, network namespace, and `nftables` input policy | Tested |
 | B3 | Project to system agent | Separate UID, private `/run`, socket group, and `hostd` accepts peers by `SO_PEERCRED` | Tested |
 | B4 | System agent to root | Typed `hostd` operations, policy, human approval, and audit | Tested. Package scripts remain gap 6. |
-| B5 | Network to host | OpenSSH keys over private networking | Design only, Phase 5 |
+| B5 | Network to host | OpenSSH keys only, and no remote root. The VM image enforces this. Private networking is still design only | Tested for the VM image |
 | B6 | Project to kernel | Seccomp filter and hidden kernel interfaces reduce exposure only | Partial by design |
 
 ## Threats and controls
@@ -52,6 +52,9 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Inspect or signal another project's processes | T1, T2 | A1, A2 | `ProtectProc=invisible`, UID checks | `proc_visible`, `proc_cmdline`, `proc_environ`, `signal` |
 | Connect to another project's GUI socket | T1, T2 | A3 | Sockets live in a mode `0700` directory under the project's own `/tmp` | `gui_socket`, `tests/gui/guest/isolation.sh` |
 | Connect to another project's X11 display through its abstract socket | T1, T2 | A3 | Abstract sockets belong to the network namespace | `tests/gui/guest/isolation.sh` |
+| Log in to a new image with a shipped credential | T5 | A6 | The image has no password and no key, and the first key arrives as a boot credential | `tests/image/run` |
+| Guess a password, or log in remotely as root | T5 | A6 | `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no` | `tests/image/guest/first_boot.sh` |
+| Impersonate another machine built from the same image | T5 | A6 | The image ships no host keys or machine ID, and each first boot generates its own | `tests/image/run` |
 | Read another project's screenshots, recordings, or input traces | T1, T2 | A3 | Project directory modes, mode `0600` files | `tests/gui/guest/isolation.sh` |
 | Reach a GUI viewer over the network | T5 | A3 | The viewer binds only a project-private Unix socket, and remote use goes through SSH and root | `tests/gui/run` |
 | Trick root into opening a project path through a GUI session | T1, T2 | A4 | `agentos project gui` only starts commands as the project, and root opens no project file | `tests/gui/guest/cleanup.sh` |
@@ -113,6 +116,9 @@ Each gap stays open until a later change closes it. The suite marks the first on
 18. **Graphical sessions do not contain the applications in them.** Applications in one session can capture each other and inject input through the compositor. A process that leaves its process group stays alive after `stop`, until its project command ends.
 19. **A viewer can send input.** An administrator who opens `view` can click and type in the session, like the project itself can.
 13. **A leaked connection keeps its identity.** `SO_PEERCRED` describes who connected. If the system agent passes an open socket to another process, that process acts as the system agent.
+
+20. **The first boot trusts whoever supplies the boot credential.** Until an administrator key exists, anyone who controls the hypervisor can enroll one. That party can already read the disk, and the file is never overwritten once it exists.
+21. **The `admin` account has passwordless sudo.** A stolen administrator key is root on the host. The account has no password to type, and the image relies on the key alone.
 
 ## Rules for later phases
 

@@ -106,6 +106,22 @@ A project's commands start with `HOME` set to `home/` and the working directory 
 
 `packaging/build` writes `.build/package/agentos_VERSION_amd64.deb`. Install it with `apt-get install ./agentos_VERSION_amd64.deb`. `/var/lib/agent-os` must be on Btrfs. On any other filesystem the install stops before it unpacks a file.
 
+## VM image
+
+`packaging/build-image` writes `.build/image/agentos_VERSION_amd64.qcow2`, with a checksum and a package list beside it. It needs a built test VM, so run `tests/vm/vm build` first.
+
+The image is a minimal Debian 13 with the package already installed. It boots with BIOS firmware and uses DHCP on the first Ethernet interface. It has 8 GiB for the root and a Btrfs data partition that grows to fill the disk on every boot, so enlarge the disk with `qemu-img resize` before you start it.
+
+The image holds no password and no SSH key. Give the first boot the administrator's public key as a systemd credential, or nobody can log in:
+
+```bash
+qemu-system-x86_64 -machine q35,accel=kvm -m 4G -drive file=agentos.qcow2,if=virtio \
+    -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22 \
+    -smbios "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.admin=$(base64 -w0 key.pub)"
+```
+
+Log in as `admin`, which has `sudo` without a password. Root cannot log in over SSH, and the server accepts only keys. Each machine generates its own host keys and machine ID on first boot. APT points at the live Debian archive.
+
 | Action | What happens |
 |---|---|
 | Install | Creates `agentos-system` and the directories under `/var/lib/agent-os` and `/opt/agent-os`, enables Btrfs quotas, copies the default policy and `storage.conf` if they are absent, and starts the firewall, the two `hostd` sockets, and the storage timer. |

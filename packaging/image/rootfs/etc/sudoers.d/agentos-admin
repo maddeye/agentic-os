@@ -1,0 +1,2 @@
+# The admin account has no password to type.
+admin ALL=(ALL) NOPASSWD:ALL

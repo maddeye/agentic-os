@@ -26,6 +26,9 @@ To rebuild from nothing, add `--force`. Two builds on 2026-11-08 produced identi
 | `tests/vm/vm ssh [COMMAND]` | Boots if needed and connects as `admin`, which has passwordless sudo. |
 | `tests/vm/vm down` | Shuts down the VM. |
 | `tests/vm/vm reset` | Stops the VM and discards all changes since the baseline. |
+| `tests/vm/vm kill` | Cuts the VM's power. |
+| `tests/vm/vm image FILE [--no-key]` | Discards `.vm/run` and boots a copy of a built image on a 24 GiB disk. Without `--no-key`, the first boot enrolls the test key. |
+| `tests/vm/vm export-data FILE` | Writes the stopped VM's data disk to a compressed qcow2 under `.vm`. `packaging/build-image` uses it. |
 | `tests/vm/vm snapshot save NAME` | Stops the VM and saves both disks. |
 | `tests/vm/vm snapshot restore NAME` | Stops the VM and restores both disks. |
 | `tests/vm/vm snapshot list` | Lists saved snapshots. |
@@ -143,6 +146,20 @@ The last line is `PASS: packaging`. `tests/vm/deploy` already installs the packa
 - A `configure` killed partway through, then finished by `dpkg --configure -a`.
 - Remove, reinstall, and purge, including that a UID is not reused and the firewall is gone.
 - A refused install off Btrfs that unpacks nothing, with an install on Btrfs as its control.
+
+## Run the image suite
+
+```bash
+tests/image/run
+```
+
+The last line is `PASS: image`. It builds the image, then boots the file that `packaging/build-image` published, with nothing installed first:
+
+- A first boot without a key, where nobody can log in.
+- A first boot with a key, on a disk larger than the image. The system has no failed unit, the data filesystem has grown, and only keys and no root login are accepted.
+- Two projects that run, stay apart, reach the internet, and restore a snapshot.
+- A power cut, after which the data, the network, and the login are still there.
+- A second machine from the same image, with its own host key and machine ID.
 
 ## Run the suites in GitHub Actions
 
