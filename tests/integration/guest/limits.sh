@@ -20,9 +20,11 @@ eq "allocation over the limit fails" 1 "$(status_of agent capped -- python3 -c "
 # Two commands must share one budget. Each fits alone, and together they do not.
 agentos project run --detach capped -- python3 -c "$(alloc 300 25)" >/dev/null
 sleep 3
+eq "one command fits in the memory limit" 1 "$(agentos project ps capped | wc -l)"
 agentos project run --detach capped -- python3 -c "$(alloc 300 25)" >/dev/null
 sleep 5
-eq "memory limit covers all commands together" 1 "$(agentos project ps capped | wc -l)"
+# The kernel can kill both, because the first victim still holds its memory when the second allocates.
+between "memory limit covers all commands together (survivors)" 0 1 "$(agentos project ps capped | wc -l)"
 agentos project stop capped
 
 eq "process count under the limit works" 0 "$(status_of agent capped -- python3 -c 'import subprocess; [subprocess.Popen(["sleep", "1"]) for _ in range(50)]')"
@@ -38,13 +40,14 @@ agentos project create hog1 >/dev/null
 agentos project create hog2 >/dev/null
 agentos project run --detach hog1 -- python3 -c "$(alloc 1800 25)" >/dev/null
 sleep 4
+eq "one project fits in the parent limit" 1 "$(agentos project ps hog1 | wc -l)"
 agentos project run --detach hog2 -- python3 -c "$(alloc 1800 25)" >/dev/null
 sleep 6
 total=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 peak=$(( $(cat /sys/fs/cgroup/agentos.slice/agentos-project.slice/memory.peak) >> 20 ))
 # systemd computes 85% of physical RAM, which is slightly more than MemTotal.
 between "parent slice stays near 85% of RAM (MiB)" 1 $(( total * 86 / 100 )) "$peak"
-eq "parent limit stopped one project" 1 "$(( $(agentos project ps hog1 | wc -l) + $(agentos project ps hog2 | wc -l) ))"
+between "parent limit stopped a project (survivors)" 0 1 "$(( $(agentos project ps hog1 | wc -l) + $(agentos project ps hog2 | wc -l) ))"
 eq "SSH service survives" active "$(systemctl is-active ssh)"
 for name in capped free hog1 hog2; do agentos project delete "$name" --yes; done
 finish
