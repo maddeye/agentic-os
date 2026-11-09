@@ -55,6 +55,7 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Log in to a new image with a shipped credential | T5 | A6 | The image has no password and no key, and the first key arrives as a boot credential | `tests/image/run` |
 | Log in to a newly installed host with a shipped credential | T5 | A6 | The ISO holds no password or key. The installer refuses to go on without a valid public key | `tests/installer/run` |
 | Impersonate a newly installed host on its first connection | T5 | A6 | The installer generates host keys and shows the fingerprint on the console | `tests/installer/run` |
+| Keep a stale credential or host key through a repair | T5 | A6 | A repair enrolls the key typed at the console and generates new host keys | `tests/installer/run` |
 | Guess a password, or log in remotely as root | T5 | A6 | `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no` | `tests/image/guest/first_boot.sh` |
 | Impersonate another machine built from the same image | T5 | A6 | The image ships no host keys or machine ID, and each first boot generates its own | `tests/image/run` |
 | Read another project's screenshots, recordings, or input traces | T1, T2 | A3 | Project directory modes, mode `0600` files | `tests/gui/guest/isolation.sh` |

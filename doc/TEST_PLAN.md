@@ -177,6 +177,7 @@ The last line is `PASS: installer`. It builds the ISO and answers the installer 
 - The host key fingerprint in the report matches the one the machine serves, and a key that was not enrolled cannot log in.
 - `tests/image/guest/first_boot.sh` on the installed machine, the same acceptance steps as the image.
 - An upgrade of `agentos` through `hostd`, under a running project, then a reboot. Project data, snapshots, toolchains, and the network survive.
+- A destroyed root, a power cut during its repair, and a repair that finishes. Accounts, UIDs, limits, data, snapshots, and the audit log survive, and the toolchain installs again. A repair of an unreadable data partition stops without changing anything.
 - Under UEFI from a USB stick, with the key read from a second stick. The medium is large enough to qualify and still is not offered, and neither stick can be chosen.
 
 ## Run the suites in GitHub Actions

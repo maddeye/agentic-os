@@ -996,8 +996,8 @@ Use typed checks or unprivileged execution whenever possible.
 - [x] Implement secure administrator enrollment.
 - [x] Test clean installation.
 - [x] Test normal upgrades.
-- [ ] Test system recovery.
-- [ ] Test preservation of persistent project data.
+- [x] Test system recovery.
+- [x] Test preservation of persistent project data.
 - [ ] Document installation and maintenance.
 - [ ] Run extended unattended tests with multiple project agents.
 
@@ -1136,6 +1136,7 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-09 | The image is built from the APT snapshot and then points at live Debian | The snapshot makes the contents repeatable. A host pinned to it would never receive a security update. |
 | 2026-11-09 | The installer copies the image's root filesystem from a small live system, instead of driving debian-installer | Every install is the system the image suite tested, it needs no network, and the console prompts are ours to test. The cost is that this repository owns partitioning. |
 | 2026-11-09 | `grub-cloud-amd64` is the boot loader, and an installed disk boots under BIOS and UEFI | One package writes both, keeps them current on upgrade, and needs no firmware detection. It does nothing without its flag file, so the VM image stays BIOS only. |
+| 2026-11-09 | Recovery from a broken root is an installer repair that keeps the data partition | Projects survive without a recent backup, and the same medium that installs the host repairs it. Accounts and limits are rebuilt from the registry, so the root stays replaceable. Toolchains and administrator config are not preserved, because they live on the root. |
 | 2026-11-09 | `package_upgrade` takes no names and always needs approval | A host upgrade concerns the whole system, and a partial list could leave it inconsistent. It reuses the exact-archive approval, so a later publication cannot widen what applies. Recovery points stay open, because the ext4 root has no snapshots. |
 | 2026-11-09 | The installer enrolls one SSH key at the console and generates the host keys | No password or network path exists during enrollment, and the administrator can check the host key on the first connection instead of trusting it. The key can be pasted, or read from a USB stick when the console cannot paste. |
 

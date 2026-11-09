@@ -53,10 +53,10 @@ type_line "-----BEGIN OPENSSH PRIVATE KEY-----"
 await "That is not an SSH public key."
 await "Key: "
 type_line "$(cat "$key.pub")"
-await "Disk to erase: "
+await "Disk to use: "
 type_line "sr0"
 await "sr0 is not one of the listed disks."
-await "Disk to erase: "
+await "Disk to use: "
 type_line "vda"
 await "Type vda again"
 type_line "vda"
@@ -72,8 +72,10 @@ installed_bytes=$("$vm" boot-code)
 type_line ""
 await "Key: "
 type_line "$(cat "$key.pub")"
-await "Disk to erase: "
+await "Disk to use: "
 type_line "vda"
+await "press Enter to erase"
+type_line ""
 await "Type vda again"
 type_line "sda"
 await "Nothing was changed."
@@ -84,8 +86,10 @@ echo "### BIOS: a power cut in the middle of a reinstall"
 type_line ""
 await "Key: "
 type_line "$(cat "$key.pub")"
-await "Disk to erase: "
+await "Disk to use: "
 type_line "vda"
+await "press Enter to erase"
+type_line ""
 await "Type vda again"
 type_line "vda"
 await "Copying the system."
@@ -98,8 +102,10 @@ start_console
 type_line ""
 await "Key: "
 type_line "$(cat "$key.pub")"
-await "Disk to erase: "
+await "Disk to use: "
 type_line "vda"
+await "press Enter to erase"
+type_line ""
 await "Type vda again"
 type_line "vda"
 await "Agent OS is installed on vda." 600
@@ -120,7 +126,60 @@ step image/guest/first_boot
 step installer/guest/upgrade
 "$vm" down
 step installer/guest/after_upgrade
-"$vm" down
+
+echo "### repair: the root is destroyed and the projects stay"
+"$vm" ssh 'sudo agentos project create gamma --disk 2G --memory-max 1G >/dev/null'
+# A newer installer can give the system agent another UID, which leaves its files with an owner nobody has.
+"$vm" ssh 'sudo install -o 54321 -g 54321 /dev/null /var/lib/agent-os/system-agent/stale-owner'
+uids=$("$vm" ssh 'for p in alpha gamma; do sudo agentos project inspect $p | sed -n s/^uid=//p; done' | paste -sd' ')
+snapshots=$("$vm" ssh 'sudo agentos project snapshots alpha | wc -l')
+# Sync first, because nothing on the zeroed root can run afterward, and gamma is seconds old.
+"$vm" ssh 'sudo sync; sudo dd if=/dev/zero of=/dev/disk/by-partlabel/agentos-root bs=1M count=64 conv=fsync status=none' || true
+"$vm" kill
+
+repair_prompts() {
+	start_console
+	type_line ""
+	await "Key: "
+	type_line "$(cat "$key.pub")"
+	await "Disk to use: "
+	type_line "vda"
+	await "press Enter to erase"
+	type_line "repair"
+}
+"$vm" installer "$iso" --keep-disk
+repair_prompts
+await "Type vda again"
+type_line "vda"
+await "Copying the system."
+"$vm" kill
+eq "an interrupted repair has no boot code" 0 "$("$vm" boot-code)"
+
+"$vm" installer "$iso" --keep-disk
+repair_prompts
+await "Type vda again"
+type_line "vda"
+await "Agent OS is repaired on vda. Kept 3 projects." 600
+await "press Enter to restart"
+reported=$(reported_host_key)
+"$vm" kill
+
+"$vm" up
+eq "the repaired host serves the host key it reported" "$reported" "$(host_key)"
+copy_tests
+step installer/guest/installed bios
+step installer/guest/repaired $uids "$snapshots"
+"$vm" ssh 'sudo dd if=/dev/zero of=/dev/disk/by-partlabel/agentos-data bs=1M count=128 conv=fsync status=none; sudo sync' || true
+"$vm" kill
+
+echo "### repair: a data partition that cannot be read stops the repair"
+"$vm" installer "$iso" --keep-disk
+installed_bytes=$("$vm" boot-code)
+repair_prompts
+await "The data partition cannot be read"
+await "Press Enter to install"
+eq "a refused repair leaves the boot code" "$installed_bytes" "$("$vm" boot-code)"
+"$vm" kill
 
 echo "### UEFI: the key comes from a USB stick"
 "$vm" installer "$iso" --uefi --key "$key.pub"
@@ -130,16 +189,16 @@ await "Key: "
 type_line ""
 await "Disks that can hold Agent OS:"
 listing_start=$position
-await "Disk to erase: "
+await "Disk to use: "
 eq "only the target disk is offered" 1 "$(tail -c +$((listing_start + 1)) "$log" | head -c $((position - listing_start)) | grep -acE '^(vd|sd|sr)')"
 eq "the listed disk is the target" 1 "$(tail -c +$((listing_start + 1)) "$log" | head -c $((position - listing_start)) | grep -ac '^vda')"
 # The install medium is a 17 GiB stick, large enough to qualify except that it is the medium.
 type_line "sda"
 await "sda is not one of the listed disks."
-await "Disk to erase: "
+await "Disk to use: "
 type_line "sdb"
 await "sdb is not one of the listed disks."
-await "Disk to erase: "
+await "Disk to use: "
 type_line "vda"
 await "Type vda again"
 type_line "vda"
