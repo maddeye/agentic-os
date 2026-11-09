@@ -66,6 +66,8 @@ jobs:
             command: tests/packaging/run
           - name: image
             command: tests/image/run
+          - name: installer
+            command: tests/installer/run
     name: ${{ matrix.name }}
     env:
       AOS_BUILD_IMAGE_LOADED: "1"

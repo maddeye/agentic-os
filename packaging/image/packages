@@ -1,6 +1,6 @@
 dbus
 e2fsprogs
-grub-pc
+grub-cloud-amd64
 initramfs-tools
 kmod
 linux-image-amd64

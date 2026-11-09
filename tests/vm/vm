@@ -11,9 +11,12 @@ source "$here/image.lock"
 # build. .vm/run holds the overlays that `reset` discards.
 key="$state/id_ed25519"
 disks=(root data)
+# UEFI remembers its boot order across boots, so a disk that became bootable later would stay behind its shell.
+declare -A boot_index=([root]=,bootindex=1)
 container=agentos-test-vm
 toolbox=agentos-vm-toolbox:$APT_SNAPSHOT
 ssh_port=10022
+console_port=10023
 
 in_toolbox() {
 	docker run --rm -i --user "$(id -u):$(id -g)" -v "$state:$state" -w "$state" "$toolbox" "$@"
@@ -30,18 +33,22 @@ guest() {
 }
 
 boot() { # <disk dir> [extra qemu args...]
-	local dir=$1 name drives=()
+	local dir=$1 name drives=() firmware=()
 	shift
 	for name in "${disks[@]}"; do
 		[[ -f "$dir/$name.qcow2" ]] || continue
 		drives+=(-drive "if=none,id=$name,file=$dir/$name.qcow2,format=qcow2"
-			-device "virtio-blk-pci,drive=$name,serial=agentos-$name")
+			-device "virtio-blk-pci,drive=$name,serial=agentos-$name${boot_index[$name]:-}")
 	done
+	# A machine installed under UEFI keeps its firmware across every later boot.
+	[[ ! -f "$dir/efivars.fd" ]] || firmware=(-drive "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd"
+		-drive "if=pflash,format=raw,unit=1,file=$dir/efivars.fd")
 	docker rm -f "$container" >/dev/null 2>&1 || true
 	docker run -d --name "$container" --device /dev/kvm --network host \
 		--user "$(id -u):$(id -g)" -v "$state:$state" "$toolbox" \
 		qemu-system-x86_64 -name agentos-test -machine q35,accel=kvm -cpu host -smp 4 -m 4G \
-		-display none -serial "file:$state/serial.log" \
+		-display none "${firmware[@]}" \
+		-chardev "socket,id=console,host=127.0.0.1,port=$console_port,server=on,wait=off,logfile=$state/serial.log" -serial chardev:console \
 		-nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$ssh_port-:22" \
 		"${drives[@]}" "$@" >/dev/null
 	wait_for "$ready"
@@ -49,6 +56,7 @@ boot() { # <disk dir> [extra qemu args...]
 
 can_log_in() { guest true </dev/null 2>/dev/null; }
 sshd_answers() { ssh-keyscan -T 1 -p "$ssh_port" 127.0.0.1 2>/dev/null | grep -q .; }
+installer_waits() { grep -q 'Press Enter to install' "$state/serial.log" 2>/dev/null; }
 ready=can_log_in
 
 wait_for() { # <check>
@@ -156,6 +164,54 @@ cmd_image() { # <image> [--no-key]
 	boot "$state/run" "${credential[@]}"
 }
 
+cmd_installer() { # <iso> [--uefi] [--keep-disk] [--key FILE]
+	local iso=$1 uefi=false keep=false key_file="" medium extra=()
+	shift
+	while (($#)); do
+		case "$1" in
+			--uefi) uefi=true ;;
+			--keep-disk) keep=true ;;
+			--key) key_file=$2; shift ;;
+			*) echo "vm: unknown installer option $1" >&2; exit 2 ;;
+		esac
+		shift
+	done
+	cmd_kill
+	if [[ $keep == false ]]; then
+		rm -rf "$state/run"
+		mkdir -p "$state/run"
+		in_toolbox qemu-img create -q -f qcow2 "$state/run/root.qcow2" 24G
+		[[ $uefi == false ]] || in_toolbox cp /usr/share/OVMF/OVMF_VARS_4M.fd "$state/run/efivars.fd"
+	fi
+	medium=$state/run/installer.img
+	cp --reflink=auto "$iso" "$medium"
+	if [[ $uefi == true ]]; then
+		# Writable and larger than the smallest target, so only the medium check keeps it off the list.
+		truncate -s 17G "$medium"
+		extra+=(-device qemu-xhci -drive "if=none,id=medium,file=$medium,format=raw"
+			-device "usb-storage,drive=medium,bootindex=0")
+	else
+		extra+=(-drive "if=none,id=medium,file=$medium,format=raw,readonly=on,media=cdrom"
+			-device "ide-cd,drive=medium,bootindex=0")
+	fi
+	if [[ -n $key_file ]]; then
+		[[ $uefi == true ]] || extra+=(-device qemu-xhci)
+		cp "$key_file" "$state/run/agentos-admin.pub"
+		in_toolbox bash -c "rm -f run/key.img; mkfs.vfat -C run/key.img 8192 >/dev/null; mcopy -i run/key.img run/agentos-admin.pub ::agentos-admin.pub"
+		extra+=(-drive "if=none,id=stick,file=$state/run/key.img,format=raw" -device usb-storage,drive=stick)
+	fi
+	ready=installer_waits
+	boot "$state/run" "${extra[@]}"
+}
+
+# Counts the non-zero bytes of the root disk's boot code. Zero means firmware cannot start it. Works while the VM runs.
+cmd_boot_code() {
+	rm -f "$state/run/boot-code.bin"
+	in_toolbox qemu-img dd -U -f qcow2 -O raw bs=440 count=1 if="$state/run/root.qcow2" of="$state/run/boot-code.bin"
+	tr -d '\0' < "$state/run/boot-code.bin" | wc -c
+	rm -f "$state/run/boot-code.bin"
+}
+
 cmd_export_data() { # <output under .vm>
 	in_toolbox qemu-img convert -c -O qcow2 "$state/run/data.qcow2" "$1"
 }
@@ -189,8 +245,10 @@ case "${1:-}" in
 	reset) cmd_reset ;;
 	kill) cmd_kill ;;
 	image) shift; cmd_image "$@" ;;
+	installer) shift; cmd_installer "$@" ;;
+	boot-code) cmd_boot_code ;;
 	export-data) shift; cmd_export_data "$@" ;;
 	snapshot) shift; cmd_snapshot "$@" ;;
 	ssh) shift; cmd_up; guest "$@" ;;
-	*) echo "usage: vm build [--force]|up|down|kill|reset|image FILE [--no-key]|export-data FILE|ssh [cmd]|snapshot ..." >&2; exit 2 ;;
+	*) echo "usage: vm build [--force]|up|down|kill|reset|image FILE [--no-key]|installer ISO [--uefi] [--keep-disk] [--key FILE]|export-data FILE|ssh [cmd]|snapshot ..." >&2; exit 2 ;;
 esac

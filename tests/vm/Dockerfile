@@ -6,5 +6,5 @@ ARG APT_SNAPSHOT
 RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s/ trixie main\n' "$APT_SNAPSHOT" > /etc/apt/sources.list \
  && rm -f /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
- && apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils \
+ && apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ovmf dosfstools mtools \
  && rm -rf /var/lib/apt/lists/*

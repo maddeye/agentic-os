@@ -53,6 +53,8 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Connect to another project's GUI socket | T1, T2 | A3 | Sockets live in a mode `0700` directory under the project's own `/tmp` | `gui_socket`, `tests/gui/guest/isolation.sh` |
 | Connect to another project's X11 display through its abstract socket | T1, T2 | A3 | Abstract sockets belong to the network namespace | `tests/gui/guest/isolation.sh` |
 | Log in to a new image with a shipped credential | T5 | A6 | The image has no password and no key, and the first key arrives as a boot credential | `tests/image/run` |
+| Log in to a newly installed host with a shipped credential | T5 | A6 | The ISO holds no password or key. The installer refuses to go on without a valid public key | `tests/installer/run` |
+| Impersonate a newly installed host on its first connection | T5 | A6 | The installer generates host keys and shows the fingerprint on the console | `tests/installer/run` |
 | Guess a password, or log in remotely as root | T5 | A6 | `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no` | `tests/image/guest/first_boot.sh` |
 | Impersonate another machine built from the same image | T5 | A6 | The image ships no host keys or machine ID, and each first boot generates its own | `tests/image/run` |
 | Read another project's screenshots, recordings, or input traces | T1, T2 | A3 | Project directory modes, mode `0600` files | `tests/gui/guest/isolation.sh` |
@@ -117,8 +119,9 @@ Each gap stays open until a later change closes it. The suite marks the first on
 19. **A viewer can send input.** An administrator who opens `view` can click and type in the session, like the project itself can.
 13. **A leaked connection keeps its identity.** `SO_PEERCRED` describes who connected. If the system agent passes an open socket to another process, that process acts as the system agent.
 
-20. **The first boot trusts whoever supplies the boot credential.** Until an administrator key exists, anyone who controls the hypervisor can enroll one. That party can already read the disk, and the file is never overwritten once it exists.
+20. **The first boot trusts whoever supplies the boot credential.** Until an administrator key exists, anyone who controls the hypervisor can enroll one. That party can already read the disk, and the file is never overwritten once it exists. An installed host already has a key, so this applies to the VM image.
 21. **The `admin` account has passwordless sudo.** A stolen administrator key is root on the host. The account has no password to type, and the image relies on the key alone.
+22. **The installer ISO is not signed.** Its checksum catches damage, and someone who can replace the ISO can replace the checksum too. Secure Boot must be off to start it. The installer also runs as root on the console, so anyone at the console before the disk is chosen can install their own key.
 
 ## Rules for later phases
 

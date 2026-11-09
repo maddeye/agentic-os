@@ -1,0 +1,46 @@
+#!/bin/bash
+# Runs as root inside the builder VM, after build-guest. Wraps the root filesystem that build-guest made in a live installer.
+set -euo pipefail
+snapshot=$1
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root=/dev/disk/by-id/virtio-agentos-data-part2
+system=/mnt/image
+live=/mnt/live
+staging=/mnt/staging
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get install -y -q --no-install-recommends mtools squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin >/dev/null
+
+mkdir -p "$staging/agentos" "$staging/live" "$staging/boot/grub"
+# Not read-only: services with private mount namespaces still hold the read-write mount from build-guest.
+mount "$root" "$system"
+mksquashfs "$system" "$staging/agentos/root.squashfs" -quiet -no-progress -comp zstd
+umount "$system"
+
+archive=http://snapshot.debian.org/archive
+mmdebstrap --mode=root --variant=minbase --skip=output/mknod \
+	--include="$(paste -sd, "$here/installer-packages")" \
+	--customize-hook="cp -r $here/installer-rootfs/. \"\$1/\"" \
+	--customize-hook='chroot "$1" chmod 0755 /usr/local/sbin/agentos-install' \
+	--customize-hook='echo agentos-installer > "$1/etc/hostname"' \
+	--customize-hook='chroot "$1" update-initramfs -u' \
+	trixie "$live" \
+	"deb [check-valid-until=no] $archive/debian/$snapshot trixie main" \
+	"deb [check-valid-until=no] $archive/debian/$snapshot trixie-updates main" \
+	"deb [check-valid-until=no] $archive/debian-security/$snapshot trixie-security main"
+cp "$live"/boot/vmlinuz-* "$staging/live/vmlinuz"
+cp "$live"/boot/initrd.img-* "$staging/live/initrd.img"
+rm -rf "$live/boot"/* "$live"/var/cache/apt/* "$live"/var/lib/apt/lists/*
+mksquashfs "$live" "$staging/live/filesystem.squashfs" -quiet -no-progress -comp zstd
+
+cat > "$staging/boot/grub/grub.cfg" <<'GRUB'
+serial --unit=0 --speed=115200
+terminal_input console serial
+terminal_output console serial
+set timeout=3
+menuentry "Install Agent OS" {
+	linux /live/vmlinuz boot=live quiet console=tty0 console=ttyS0,115200
+	initrd /live/initrd.img
+}
+GRUB
+grub-mkrescue -o /opt/aos-image/agentos.iso "$staging" -- -volid AGENTOS >/dev/null 2>&1
