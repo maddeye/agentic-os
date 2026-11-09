@@ -28,6 +28,8 @@ To rebuild from nothing, add `--force`. Two builds on 2026-11-08 produced identi
 | `tests/vm/vm reset` | Stops the VM and discards all changes since the baseline. |
 | `tests/vm/vm kill` | Cuts the VM's power. |
 | `tests/vm/vm image FILE [--no-key]` | Discards `.vm/run` and boots a copy of a built image on a 24 GiB disk. Without `--no-key`, the first boot enrolls the test key. |
+| `tests/vm/vm installer ISO [--uefi] [--keep-disk] [--key FILE]` | Boots the ISO with a blank 24 GiB disk and waits at the installer's first prompt. `--uefi` uses UEFI firmware and attaches the ISO as a 17 GiB USB stick instead of a CD. `--keep-disk` keeps the disk from the last run. `--key` adds a USB stick that holds the file as `agentos-admin.pub`. Later boots of that disk keep the same firmware. |
+| `tests/vm/vm boot-code` | Prints how many non-zero bytes the root disk has in its boot code. It works while the VM runs. |
 | `tests/vm/vm export-data FILE` | Writes the stopped VM's data disk to a compressed qcow2 under `.vm`. `packaging/build-image` uses it. |
 | `tests/vm/vm snapshot save NAME` | Stops the VM and saves both disks. |
 | `tests/vm/vm snapshot restore NAME` | Stops the VM and restores both disks. |
@@ -160,6 +162,21 @@ The last line is `PASS: image`. It builds the image, then boots the file that `p
 - Two projects that run, stay apart, reach the internet, and restore a snapshot.
 - A power cut, after which the data, the network, and the login are still there.
 - A second machine from the same image, with its own host key and machine ID.
+
+## Run the installer suite
+
+```bash
+tests/installer/run
+```
+
+The last line is `PASS: installer`. It builds the ISO and answers the installer on the serial console. The VM's serial port accepts input on `127.0.0.1:10023`. Only what the installer wrote boots afterward:
+
+- Under BIOS from a CD, with the key pasted. A value that is not a public key, a private key, and a disk that is not listed are all refused.
+- A refused confirmation that leaves the installed boot code alone.
+- A power cut in the middle of a reinstall, which leaves no boot code, then a run that finishes.
+- The host key fingerprint in the report matches the one the machine serves, and a key that was not enrolled cannot log in.
+- `tests/image/guest/first_boot.sh` on the installed machine, the same acceptance steps as the image.
+- Under UEFI from a USB stick, with the key read from a second stick. The medium is large enough to qualify and still is not offered, and neither stick can be chosen.
 
 ## Run the suites in GitHub Actions
 

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Builds the Agent OS installer ISO in the test VM, from the same root filesystem as the VM image.
+# The ISO goes to .build/installer.
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+vm="$repo/tests/vm/vm"
+source "$repo/tests/vm/image.lock"
+out=$repo/.build/installer
+
+"$repo/packaging/build"
+name=$(basename "$repo"/.build/package/agentos_*.deb .deb)
+"$vm" reset
+"$vm" up
+tar -C "$repo" -cf - packaging/image .build/package \
+	| "$vm" ssh 'sudo mkdir -p /opt/aos-image && sudo tar -C /opt/aos-image --no-same-owner -xf -'
+"$vm" ssh "sudo bash /opt/aos-image/packaging/image/build-guest $APT_SNAPSHOT"
+"$vm" ssh "sudo bash /opt/aos-image/packaging/image/build-iso-guest $APT_SNAPSHOT"
+mkdir -p "$out"
+"$vm" ssh 'cat /opt/aos-image/packages.txt' > "$out/$name.packages.tmp"
+"$vm" ssh 'cat /opt/aos-image/agentos.iso' > "$out/$name.iso.tmp"
+"$vm" down
+# The rename publishes the ISO only after every step above has succeeded.
+mv "$out/$name.packages.tmp" "$out/$name.packages"
+mv "$out/$name.iso.tmp" "$out/$name.iso"
+(cd "$out" && sha256sum "$name.iso" > "$name.iso.sha256")
+echo "iso: $out/$name.iso"

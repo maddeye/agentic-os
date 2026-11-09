@@ -122,6 +122,24 @@ qemu-system-x86_64 -machine q35,accel=kvm -m 4G -drive file=agentos.qcow2,if=vir
 
 Log in as `admin`, which has `sudo` without a password. Root cannot log in over SSH, and the server accepts only keys. Each machine generates its own host keys and machine ID on first boot. APT points at the live Debian archive.
 
+## Installer ISO
+
+`packaging/build-iso` writes `.build/installer/agentos_VERSION_amd64.iso`, with a checksum and a package list beside it. It needs a built test VM, so run `tests/vm/vm build` first.
+
+Write the ISO to a USB stick, or attach it as a CD. It starts under BIOS or UEFI, and Secure Boot must be off to start it. It installs from the medium and uses no network. Each console shows the installer, so press Enter on the one you are using.
+
+The installer asks for three things:
+
+1. The administrator's SSH public key. Paste it, or press Enter to read `agentos-admin.pub` from the first USB stick that holds one.
+2. The disk to install on. It lists writable disks of at least 16 GiB and leaves out the install medium.
+3. The disk's name again. This erases the whole disk, including any earlier Agent OS and its projects.
+
+The disk gets a 256 MiB EFI partition, 8 GiB for the root, and a Btrfs data partition with the rest. It boots under BIOS and UEFI, and it does not depend on firmware boot entries. The network comes up with DHCP on the first Ethernet interface.
+
+The report shows the machine's host key fingerprint. Compare it on the first connection. Log in as `admin` with the enrolled key, as with the VM image. If the install stops for any reason, boot the medium and run it again. A disk that did not finish has no boot code.
+
+## Package lifecycle
+
 | Action | What happens |
 |---|---|
 | Install | Creates `agentos-system` and the directories under `/var/lib/agent-os` and `/opt/agent-os`, enables Btrfs quotas, copies the default policy and `storage.conf` if they are absent, and starts the firewall, the two `hostd` sockets, and the storage timer. |

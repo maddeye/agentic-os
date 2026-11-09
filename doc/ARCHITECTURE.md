@@ -992,9 +992,9 @@ Use typed checks or unprivileged execution whenever possible.
 - [x] Package Agent OS services and configuration as `.deb` packages.
 - [x] Build a VM image.
 - [x] Automate boot and installation tests.
-- [ ] Create a bootable installer ISO.
-- [ ] Implement secure administrator enrollment.
-- [ ] Test clean installation.
+- [x] Create a bootable installer ISO.
+- [x] Implement secure administrator enrollment.
+- [x] Test clean installation.
 - [ ] Test normal upgrades.
 - [ ] Test system recovery.
 - [ ] Test preservation of persistent project data.
@@ -1134,6 +1134,9 @@ These decisions must be resolved through prototyping, investigation, or explicit
 | 2026-11-09 | The image holds no login, and the first administrator key arrives as a systemd boot credential | No default password or baked key can leak with the image. This adds no new first-boot program. Interactive enrollment for the installer is still open. |
 | 2026-11-09 | The image boots with BIOS only | The test VM's firmware proves it. UEFI arrives with the installer, where it needs real testing, and the bootloader question in section 14 stays open. |
 | 2026-11-09 | The image is built from the APT snapshot and then points at live Debian | The snapshot makes the contents repeatable. A host pinned to it would never receive a security update. |
+| 2026-11-09 | The installer copies the image's root filesystem from a small live system, instead of driving debian-installer | Every install is the system the image suite tested, it needs no network, and the console prompts are ours to test. The cost is that this repository owns partitioning. |
+| 2026-11-09 | `grub-cloud-amd64` is the boot loader, and an installed disk boots under BIOS and UEFI | One package writes both, keeps them current on upgrade, and needs no firmware detection. It does nothing without its flag file, so the VM image stays BIOS only. |
+| 2026-11-09 | The installer enrolls one SSH key at the console and generates the host keys | No password or network path exists during enrollment, and the administrator can check the host key on the first connection instead of trusting it. The key can be pasted, or read from a USB stick when the console cannot paste. |
 
 ---
 

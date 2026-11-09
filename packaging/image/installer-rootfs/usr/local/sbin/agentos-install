@@ -1,0 +1,183 @@
+#!/bin/bash
+# Installs Agent OS from the live medium onto one disk. It runs on the local console and uses no network.
+# A power cut leaves a disk with no boot code, so the disk cannot boot a partial system. Run it again to finish.
+set -euo pipefail
+
+medium=/run/live/medium
+target=/mnt/target
+payload=/mnt/payload
+key_mount=/mnt/key
+key_file=agentos-admin.pub
+min_bytes=$((16 * 1024 * 1024 * 1024))
+key_pattern='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,2}( [[:print:]]*)?$'
+
+cleanup() {
+	umount -R "$target" "$payload" "$key_mount" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Each console shows this program, so the administrator chooses a console by pressing Enter on it.
+exec 9>/run/agentos-install.lock
+while true; do
+	read -r -p "Press Enter to install Agent OS on this machine: " _
+	flock -n 9 && break
+	echo "The installer is already running on another console."
+done
+
+medium_disk() {
+	local source parent
+	source=$(findmnt -no SOURCE "$medium")
+	parent=$(lsblk -no PKNAME "$source" | head -n1)
+	basename "${parent:-$source}"
+}
+
+# Prints one writable disk name per line. Anything else, including the medium itself, cannot be chosen.
+target_disks() {
+	local boot name size type read_only
+	boot=$(medium_disk)
+	lsblk -dnbr -o NAME,SIZE,TYPE,RO | while read -r name size type read_only; do
+		[[ $type == disk && $read_only == 0 && $name != "$boot" ]] && ((size >= min_bytes)) && echo "$name"
+	done
+}
+
+key_is_valid() {
+	[[ $1 =~ $key_pattern ]] && ssh-keygen -l -f - <<<"$1" >/dev/null 2>&1
+}
+
+# The key file comes from a stick that the administrator brought, so it is read and never run.
+key_from_usb() {
+	local boot name device fstype
+	boot=$(medium_disk)
+	mkdir -p "$key_mount"
+	while read -r name; do
+		[[ $name != "$boot" ]] || continue
+		while read -r device fstype; do
+			[[ -n $fstype ]] || continue
+			mount -o ro,nosuid,nodev,noexec "$device" "$key_mount" 2>/dev/null || continue
+			if [[ -f $key_mount/$key_file ]]; then
+				head -n1 "$key_mount/$key_file" | tr -d '\r'
+				umount "$key_mount"
+				return 0
+			fi
+			umount "$key_mount"
+		done < <(lsblk -nrpo NAME,FSTYPE "/dev/$name")
+	done < <(lsblk -dnr -o NAME,TRAN | awk '$2 == "usb" { print $1 }')
+	return 1
+}
+
+read_admin_key() {
+	local line
+	while true; do
+		echo "Paste the administrator's SSH public key, or press Enter to read $key_file from a USB stick."
+		read -r -p "Key: " line
+		if [[ -z $line ]]; then
+			line=$(key_from_usb) || { echo "No USB stick holds $key_file."; continue; }
+		fi
+		if key_is_valid "$line"; then
+			admin_key=$line
+			return
+		fi
+		echo "That is not an SSH public key."
+	done
+}
+
+read_disk() {
+	local disks line
+	disks=$(target_disks)
+	if [[ -z $disks ]]; then
+		echo "No writable disk of at least 16 GiB was found."
+		exit 1
+	fi
+	echo "Disks that can hold Agent OS:"
+	lsblk -d -o NAME,SIZE,MODEL,SERIAL $(sed 's|^|/dev/|' <<<"$disks")
+	while true; do
+		read -r -p "Disk to erase: " line
+		if grep -qxF -- "$line" <<<"$disks"; then
+			disk=$line
+			return
+		fi
+		echo "$line is not one of the listed disks."
+	done
+}
+
+# The numbers follow the table that sfdisk writes below.
+partition() { lsblk -nrpo NAME "/dev/$disk" | sed -n "$(($1 + 1))p"; }
+
+install_system() {
+	# The new label zeroes the boot code, so an interrupted run cannot leave the old system bootable.
+	echo "Writing the partition table."
+	sfdisk -q --wipe always --wipe-partitions always "/dev/$disk" <<PARTITIONS
+label: gpt
+size=1MiB, type=21686148-6449-6E6F-744E-656564454649, name=bios
+size=256MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=agentos-efi
+size=8GiB, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=agentos-root
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=agentos-data
+PARTITIONS
+	udevadm settle
+	local efi root data
+	efi=$(partition 2)
+	root=$(partition 3)
+	data=$(partition 4)
+
+	echo "Creating the filesystems."
+	mkfs.vfat -F32 -n AGENTOS-EFI "$efi" >/dev/null
+	mkfs.ext4 -q -F -L agentos-root "$root"
+	mkfs.btrfs -q -f -L agentos-data "$data"
+
+	mkdir -p "$target" "$payload"
+	mount "$root" "$target"
+	mount -t squashfs -o ro,loop "$medium/agentos/root.squashfs" "$payload"
+	echo "Copying the system."
+	cp -a "$payload/." "$target/"
+	umount "$payload"
+
+	mkdir -p "$target/boot/efi"
+	mount "$efi" "$target/boot/efi"
+	mount "$data" "$target/var/lib/agent-os"
+	for mount in dev proc sys; do
+		mount --rbind "/$mount" "$target/$mount"
+	done
+
+	echo "Enrolling the administrator."
+	# UUIDs, because another disk in this machine may hold an older Agent OS with the same labels.
+	sed -i -e "s/LABEL=agentos-root/UUID=$(blkid -s UUID -o value "$root")/" \
+		-e "s/LABEL=agentos-data/UUID=$(blkid -s UUID -o value "$data")/" "$target/etc/fstab"
+	echo "UUID=$(blkid -s UUID -o value "$efi") /boot/efi vfat umask=0077 0 1" >> "$target/etc/fstab"
+	install -d -m 0700 "$target/home/admin/.ssh"
+	printf '%s\n' "$admin_key" > "$target/home/admin/.ssh/authorized_keys"
+	chmod 0600 "$target/home/admin/.ssh/authorized_keys"
+	chroot "$target" chown -R admin:admin /home/admin/.ssh
+	chroot "$target" ssh-keygen -A >/dev/null
+	host_key=$(ssh-keygen -l -f "$target/etc/ssh/ssh_host_ed25519_key.pub")
+
+	echo "Preparing the data filesystem."
+	chroot "$target" dpkg-reconfigure --frontend=noninteractive agentos
+
+	# Everything above must be on disk before anything can boot it.
+	sync
+	echo "Installing the boot loader."
+	touch "$target/etc/grub.d/enable_cloud"
+	chroot "$target" dpkg-reconfigure --frontend=noninteractive grub-cloud-amd64 >/dev/null 2>&1
+	sync
+	cleanup
+}
+
+read_admin_key
+read_disk
+echo
+lsblk -o NAME,SIZE,FSTYPE,LABEL "/dev/$disk"
+echo "Administrator key: $(ssh-keygen -l -f - <<<"$admin_key")"
+read -r -p "Type $disk again to erase it and install Agent OS: " confirm
+if [[ $confirm != "$disk" ]]; then
+	echo "Nothing was changed."
+	exit 1
+fi
+
+install_system
+echo
+echo "Agent OS is installed on $disk."
+echo "Log in over SSH as admin, with the key above. Check the host key on the first connection:"
+echo "Host key: $host_key"
+read -r -p "Remove the install medium and press Enter to restart: " _
+systemctl reboot
+sleep infinity

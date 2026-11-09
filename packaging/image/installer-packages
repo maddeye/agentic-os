@@ -1,0 +1,10 @@
+btrfs-progs
+dosfstools
+e2fsprogs
+fdisk
+kmod
+linux-image-amd64
+live-boot
+openssh-client
+systemd-sysv
+udev
