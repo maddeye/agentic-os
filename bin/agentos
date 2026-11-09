@@ -40,6 +40,7 @@ usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memor
        agentos project restore NAME --snapshot ID --yes
        agentos project backup NAME --snapshot ID > FILE
        agentos project recover < FILE
+       agentos project reattach
        agentos project delete NAME --yes
        agentos storage check
        agentos system ...    (run 'agentos system' for its commands)
@@ -79,6 +80,8 @@ project_uid() {
 
 slice_of() { echo "agentos-project-$1.slice"; }
 slice_file() { echo "/etc/systemd/system/$(slice_of "$1")"; }
+# The root is replaceable, so the data partition keeps each project's limits for `reattach`.
+limits_file() { echo "$data/metadata/slices/$1"; }
 
 take_lock() {
 	exec 9>"$data/metadata/lock"
@@ -256,6 +259,7 @@ ensure_account() { # <name> <uid>
 }
 
 write_slice() { # <uid> <memory high> <memory max> <tasks> <cpu or empty>
+	install -d -m 0700 "$data/metadata/slices"
 	{
 		echo "[Slice]"
 		echo "MemoryHigh=$2"
@@ -263,7 +267,13 @@ write_slice() { # <uid> <memory high> <memory max> <tasks> <cpu or empty>
 		echo "MemorySwapMax=0"
 		echo "TasksMax=$4"
 		[[ -z "$5" ]] || echo "CPUQuota=$5%"
-	} > "$(slice_file "$1").tmp"
+	} > "$(limits_file "$1").tmp"
+	mv "$(limits_file "$1").tmp" "$(limits_file "$1")"
+	install_slice "$1"
+}
+
+install_slice() { # <uid>
+	cp "$(limits_file "$1")" "$(slice_file "$1").tmp"
 	mv "$(slice_file "$1").tmp" "$(slice_file "$1")"
 	systemctl daemon-reload
 }
@@ -519,7 +529,7 @@ cmd_delete() {
 	if getent group "aos-$name" >/dev/null; then
 		groupdel "aos-$name"
 	fi
-	rm -f "$(slice_file "$uid")" "$registry/$name.restore" "$registry/$name.slice"
+	rm -f "$(slice_file "$uid")" "$(limits_file "$uid")" "$registry/$name.restore" "$registry/$name.slice"
 	systemctl daemon-reload
 	# The qgroup keeps members until the kernel finishes dropping them.
 	btrfs subvolume sync "$data" >/dev/null 2>&1 || true
@@ -827,6 +837,32 @@ cmd_recover() {
 	echo "$name"
 }
 
+# Run by the installer's repair, inside the new root. The accounts and slices lived on the
+# root that the repair replaced. Everything else about a project is on the data partition.
+cmd_reattach() {
+	[[ $# -eq 0 ]] || usage
+	take_lock
+	local entry base name state uid
+	for entry in "$registry"/*; do
+		[[ -f "$entry" ]] || continue
+		base=${entry##*/}
+		name=${base%%.*}
+		state=${base#"$name"}
+		[[ -z "$state" || "$state" == .creating || "$state" == .deleting || "$state" == .restoring ]] || continue
+		check_name "$name"
+		uid=$(sed -n 's/^uid=//p' "$entry")
+		[[ "$uid" =~ ^[0-9]+$ ]] && (( uid >= uid_first && uid <= uid_last )) || die "$base has a UID outside the project range"
+		ensure_account "$name" "$uid"
+		if [[ -f "$(limits_file "$uid")" ]]; then
+			install_slice "$uid"
+		else
+			write_slice "$uid" 70% 80% 4096 ""
+		fi
+		echo "$name"
+	done
+	chown -hR agentos-system:agentos-system "$data/system-agent"
+}
+
 # Run by agentos-storage.timer. It adds new subvolumes to their project's limit,
 # frees automatic snapshots when space runs low, and stops the largest project
 # if that is not enough.
@@ -913,6 +949,7 @@ case "$verb" in
 	restore) cmd_restore "$@" ;;
 	backup) cmd_backup "$@" ;;
 	recover) cmd_recover "$@" ;;
+	reattach) cmd_reattach "$@" ;;
 	delete) cmd_delete "$@" ;;
 	*) usage ;;
 esac

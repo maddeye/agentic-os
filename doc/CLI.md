@@ -29,6 +29,7 @@ The command and service names are provisional.
 | `agentos project restore NAME --snapshot ID --yes` | Stops all commands, replaces the project's data, and prints the ID of the automatic pre-restore snapshot. |
 | `agentos project backup NAME --snapshot ID` | Writes a backup stream to standard output. |
 | `agentos project recover` | Recreates a project from a backup stream on standard input. Prints `NAME`. |
+| `agentos project reattach` | Rebuilds each registered project's account and limits from the data partition. Only the installer's repair needs it. |
 | `agentos project delete NAME --yes` | Stops all commands and removes all project data, its local snapshots, and the identity. |
 | `agentos storage check` | Runs the storage check at once. `agentos-storage.timer` runs it every minute. |
 
@@ -129,15 +130,26 @@ Log in as `admin`, which has `sudo` without a password. Root cannot log in over 
 
 Write the ISO to a USB stick, or attach it as a CD. It starts under BIOS or UEFI, and Secure Boot must be off to start it. It installs from the medium and uses no network. Each console shows the installer, so press Enter on the one you are using.
 
-The installer asks for three things:
+The installer asks for these things:
 
 1. The administrator's SSH public key. Paste it, or press Enter to read `agentos-admin.pub` from the first USB stick that holds one.
 2. The disk to install on. It lists writable disks of at least 16 GiB and leaves out the install medium.
-3. The disk's name again. This erases the whole disk, including any earlier Agent OS and its projects.
+3. If the disk already holds Agent OS, whether to repair it or erase it.
+4. The disk's name again.
+
+An install erases the whole disk, including any earlier Agent OS and its projects.
 
 The disk gets a 256 MiB EFI partition, 8 GiB for the root, and a Btrfs data partition with the rest. It boots under BIOS and UEFI, and it does not depend on firmware boot entries. The network comes up with DHCP on the first Ethernet interface.
 
 The report shows the machine's host key fingerprint. Compare it on the first connection. Log in as `admin` with the enrolled key, as with the VM image. If the install stops for any reason, boot the medium and run it again. A disk that did not finish has no boot code.
+
+### Repair a broken host
+
+A repair replaces the root and the boot loader and keeps the data partition, so every project, snapshot, and audit record stays. Boot the same medium, give the administrator's key again, choose the disk, and type `repair`.
+
+The new root gets new host keys, the administrator key you entered, and the ISO's Agent OS version. Each project keeps its UID, disk limit, and memory and task limits. A repair stops before it changes anything if the data partition cannot be read.
+
+A repair keeps nothing else from the old root. Install each selected toolchain again before a project needs it. The broker policy and `storage.conf` return to their defaults.
 
 ## Package lifecycle
 

@@ -91,7 +91,7 @@ read_disk() {
 	echo "Disks that can hold Agent OS:"
 	lsblk -d -o NAME,SIZE,MODEL,SERIAL $(sed 's|^|/dev/|' <<<"$disks")
 	while true; do
-		read -r -p "Disk to erase: " line
+		read -r -p "Disk to use: " line
 		if grep -qxF -- "$line" <<<"$disks"; then
 			disk=$line
 			return
@@ -100,11 +100,44 @@ read_disk() {
 	done
 }
 
+# The GPT names survive a damaged root, and an interrupted repair leaves them alone.
+holds_agent_os() {
+	[[ $(lsblk -nr -o PARTLABEL "/dev/$disk" | grep -cE '^agentos-(efi|root|data)$') == 3 ]]
+}
+
+read_mode() {
+	local line
+	holds_agent_os || return 0
+	echo "$disk already holds Agent OS."
+	while true; do
+		read -r -p "Type repair to replace only the system and keep every project, or press Enter to erase the whole disk: " line
+		case "$line" in
+			repair) mode=repair; return ;;
+			"") return ;;
+		esac
+	done
+}
+
+# A repair that cannot read the projects must stop before it replaces anything.
+check_data_is_readable() {
+	mkdir -p "$payload"
+	if ! mount -o ro "$(partition 4)" "$payload" 2>/dev/null; then
+		echo "The data partition cannot be read, so a repair cannot keep the projects. Nothing was changed."
+		exit 1
+	fi
+	if [[ ! -d $payload/metadata/projects ]]; then
+		umount "$payload"
+		echo "The data partition has no Agent OS projects, so there is nothing to keep. Nothing was changed."
+		exit 1
+	fi
+	umount "$payload"
+}
+
 # The numbers follow the table that sfdisk writes below.
 partition() { lsblk -nrpo NAME "/dev/$disk" | sed -n "$(($1 + 1))p"; }
 
-install_system() {
-	# The new label zeroes the boot code, so an interrupted run cannot leave the old system bootable.
+# The new label zeroes the boot code, so an interrupted run cannot leave the old system bootable.
+write_partition_table() {
 	echo "Writing the partition table."
 	sfdisk -q --wipe always --wipe-partitions always "/dev/$disk" <<PARTITIONS
 label: gpt
@@ -114,6 +147,15 @@ size=8GiB, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=agentos-root
 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=agentos-data
 PARTITIONS
 	udevadm settle
+}
+
+install_system() {
+	if [[ $mode == repair ]]; then
+		# Only the boot code goes. The table stays, so the data partition is not touched.
+		dd if=/dev/zero of="/dev/$disk" bs=440 count=1 conv=notrunc,fsync status=none
+	else
+		write_partition_table
+	fi
 	local efi root data
 	efi=$(partition 2)
 	root=$(partition 3)
@@ -122,7 +164,7 @@ PARTITIONS
 	echo "Creating the filesystems."
 	mkfs.vfat -F32 -n AGENTOS-EFI "$efi" >/dev/null
 	mkfs.ext4 -q -F -L agentos-root "$root"
-	mkfs.btrfs -q -f -L agentos-data "$data"
+	[[ $mode == repair ]] || mkfs.btrfs -q -f -L agentos-data "$data"
 
 	mkdir -p "$target" "$payload"
 	mount "$root" "$target"
@@ -152,6 +194,10 @@ PARTITIONS
 
 	echo "Preparing the data filesystem."
 	chroot "$target" dpkg-reconfigure --frontend=noninteractive agentos
+	if [[ $mode == repair ]]; then
+		echo "Reattaching the projects."
+		kept=$(chroot "$target" agentos project reattach | wc -l)
+	fi
 
 	# Everything above must be on disk before anything can boot it.
 	sync
@@ -162,12 +208,21 @@ PARTITIONS
 	cleanup
 }
 
+mode=install
+kept=0
 read_admin_key
 read_disk
+read_mode
+[[ $mode != repair ]] || check_data_is_readable
 echo
 lsblk -o NAME,SIZE,FSTYPE,LABEL "/dev/$disk"
 echo "Administrator key: $(ssh-keygen -l -f - <<<"$admin_key")"
-read -r -p "Type $disk again to erase it and install Agent OS: " confirm
+if [[ $mode == repair ]]; then
+	action="replace its system and keep its projects"
+else
+	action="erase it and install Agent OS"
+fi
+read -r -p "Type $disk again to $action: " confirm
 if [[ $confirm != "$disk" ]]; then
 	echo "Nothing was changed."
 	exit 1
@@ -175,7 +230,12 @@ fi
 
 install_system
 echo
-echo "Agent OS is installed on $disk."
+if [[ $mode == repair ]]; then
+	echo "Agent OS is repaired on $disk. Kept $kept projects."
+	echo "Selected toolchains must be installed again. The broker policy and storage settings are back to their defaults."
+else
+	echo "Agent OS is installed on $disk."
+fi
 echo "Log in over SSH as admin, with the key above. Check the host key on the first connection:"
 echo "Host key: $host_key"
 read -r -p "Remove the install medium and press Enter to restart: " _
