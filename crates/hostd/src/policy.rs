@@ -34,6 +34,11 @@ impl Policy {
                 reasons.push("package removal always needs approval".to_string());
                 self.review_packages(impact, &mut reasons);
             }
+            Operation::PackageUpgrade {} => {
+                reasons.push("package upgrades always need approval".to_string());
+                self.review_packages(impact, &mut reasons);
+                reasons.extend(impact.kept_back.iter().map(|name| format!("apt kept back {name}")));
+            }
             Operation::ToolchainInstallGlobal { name, version } => {
                 let key = format!("{name}/{version}");
                 if !self.automatic_toolchains.contains(&key) {
@@ -79,6 +84,14 @@ mod tests {
             automatic_toolchains: vec!["node/26.13.0".into()],
             protected_package_prefixes: vec!["linux-image".into()],
         }
+    }
+
+    #[test]
+    fn an_upgrade_always_needs_approval_and_names_what_apt_kept_back() {
+        let impact = Impact { kept_back: vec!["held".into()], ..Impact::default() };
+        let decision = policy().evaluate(&Operation::PackageUpgrade {}, &impact);
+        assert_eq!(decision.level, Level::ApprovalRequired);
+        assert_eq!(decision.reasons, ["package upgrades always need approval", "apt kept back held"]);
     }
 
     fn action(kind: ActionKind, target: &str) -> Action {

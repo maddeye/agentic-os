@@ -20,6 +20,8 @@ const MAX_REASON_CHARS: usize = 512;
 pub enum Operation {
     PackageInstall { names: Vec<String> },
     PackageRemove { names: Vec<String> },
+    /// Moves every installed package to its candidate. It never removes a package.
+    PackageUpgrade {},
     ToolchainInstallGlobal { name: String, version: String },
     ToolchainRemoveGlobal { name: String, version: String },
 }
@@ -103,6 +105,10 @@ pub struct Impact {
     pub services: Vec<String>,
     pub setuid_files: Vec<String>,
     pub used_by_projects: Vec<String>,
+    /// Upgradable packages that apt would not move, usually because of a conflict.
+    /// Changes recorded before this field existed have none.
+    #[serde(default)]
+    pub kept_back: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -186,6 +192,7 @@ impl Operation {
                     && names.len() <= MAX_PACKAGES
                     && names.iter().all(|name| valid_package_name(name))
             }
+            Operation::PackageUpgrade {} => true,
             Operation::ToolchainInstallGlobal { name, version }
             | Operation::ToolchainRemoveGlobal { name, version } => {
                 valid_toolchain_name(name) && valid_toolchain_version(version)

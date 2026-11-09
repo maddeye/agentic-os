@@ -3,15 +3,6 @@
 source "$(dirname "$0")/lib.sh"
 root=/opt/agent-os/toolchains
 
-kill_broker() { systemctl kill --kill-whom=all -s KILL 'agentos-hostd@*.service'; }
-
-wait_for() { # <command...>
-	local _
-	for _ in $(seq 1 600); do "$@" && return 0; sleep 0.1; done
-	return 1
-}
-hanging() { pgrep -f 'aos-test-[a-z]*\.postinst' >/dev/null; }
-
 touch /run/aos-test-hang
 plan 3 package install aos-test-hang
 id=$(field id <<<"$change")

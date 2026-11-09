@@ -86,6 +86,7 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Publish a tampered or partial toolchain | T3, T4 | A5 | Catalog digest, staged check as `nobody`, one rename | `tests/hostd/guest/toolchains.sh`, `tests/hostd/guest/interrupt.sh` |
 | Replace a shared toolchain from a project | T1, T2 | A5 | `ProtectSystem=strict`, root-owned files | `toolchain_write`, `tests/hostd/guest/toolchains.sh` |
 | Read project data as the system agent | T3 | A1, A2 | Project modes, and broker instances and their package scripts have no project data mounted | `tests/hostd/guest/privileges.sh`, `tests/hostd/guest/interrupt.sh` |
+| Upgrade the host without a human, or widen an approved upgrade afterward | T3, T4 | A4, A5 | `package_upgrade` always needs approval, applies only the hashed archives, and fails if SSH or the firewall is down afterward | `tests/hostd/guest/upgrade.sh` |
 | Hide a privileged change | T3 | A8 | Root-only log, synced before each privileged step | `tests/hostd/guest/packages.sh` |
 | Leave the host broken by interrupting a transaction | T3, power loss | A5, A9 | Durable `applying` record, repair before the next change | `tests/hostd/guest/interrupt.sh`, `tests/hostd/guest/after_power_loss.sh` |
 | Read or change managed snapshots | T1, T2 | A1, A7 | Mode `0700`, masked `/var/lib/agent-os`, read-only subvolumes | `snapshots_list`, `tests/storage/guest/snapshots.sh` |

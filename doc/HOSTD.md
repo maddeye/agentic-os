@@ -42,10 +42,11 @@ Send one JSON object and one newline, up to 64 KiB. The whole request must arriv
 |---|---|
 | `package_install` | `names`, up to 32 |
 | `package_remove` | `names`, up to 32 |
+| `package_upgrade` | None |
 | `toolchain_install_global` | `name`, `version` |
 | `toolchain_remove_global` | `name`, `version` |
 
-`PackageUpgrade`, `ServiceEnableDisable`, `UpgradePlan`, and recovery-point operations do not exist yet. Section 12 of the architecture does not require them for Phase 2.
+`ServiceEnableDisable`, `UpgradePlan`, and recovery-point operations do not exist yet.
 
 ## Change states
 
@@ -63,7 +64,11 @@ Approval covers the exact archives. `change_apply` hashes the copies and simulat
 
 For a toolchain, approval covers the whole catalog entry, including its URL, digest, and check.
 
-A change is `applied` only if the command succeeded and every planned action reached its planned version.
+A change is `applied` only if the command succeeded and every planned action reached its planned version. An upgrade also needs `ssh.service` and `agentos-firewall.service` active afterward.
+
+An upgrade moves every installed package to its candidate and installs any new package that needs, such as a new kernel. It never removes a package. A package that apt will not move, usually because of a conflict, appears in `impact.kept_back` and in the decision's reasons. Approval still covers the exact archives, so a version published after approval does not change what applies.
+
+`reboot_required` in `system_status` is true when a newer kernel file than the running kernel is in `/boot`. `hostd` never reboots the host.
 
 ## Policy
 
@@ -82,7 +87,7 @@ A package install is automatic only when all of these are true:
 - No package in the transaction matches a protected prefix.
 - No package ships a setuid file, or any file in a systemd unit or generator directory or `/etc/init.d`.
 
-Removals always need approval. Removing an essential package is refused outright. Installs pass `--no-remove`, so an install can never remove a package.
+Upgrades and removals always need approval. Removing an essential package is refused outright. Installs pass `--no-remove`, so an install can never remove a package.
 
 ## Package names
 

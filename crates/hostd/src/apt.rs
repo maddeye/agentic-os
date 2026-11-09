@@ -18,6 +18,8 @@ const AUTOSTART_DIRS: [&str; 7] = [
     "/systemd/system-sleep/",
     "/etc/init.d/",
 ];
+/// An upgrade that leaves either of these down has cost the administrator the host.
+const HEALTH_UNITS: [&str; 2] = ["ssh.service", "agentos-firewall.service"];
 
 fn apt_get() -> Command {
     let mut command = tool("apt-get");
@@ -36,9 +38,13 @@ const INSTALL_FLAGS: [&str; 2] = ["--no-install-recommends", "--no-remove"];
 /// With `files`, apt installs those exact archives instead of resolving names.
 fn with_operation<'a>(command: &'a mut Command, operation: &Operation, files: &[PathBuf]) -> &'a mut Command {
     match operation {
-        Operation::PackageInstall { .. } if !files.is_empty() => command.args(INSTALL_FLAGS).arg("install").args(files),
+        Operation::PackageInstall { .. } | Operation::PackageUpgrade {} if !files.is_empty() => {
+            command.args(INSTALL_FLAGS).arg("install").args(files)
+        }
         Operation::PackageInstall { names } => command.args(INSTALL_FLAGS).arg("install").args(names),
         Operation::PackageRemove { names } => command.arg("remove").args(names),
+        // A new kernel arrives as a new package, which a plain upgrade would hold back.
+        Operation::PackageUpgrade {} => command.args(INSTALL_FLAGS).args(["--with-new-pkgs", "upgrade"]),
         _ => unreachable!("apt receives only package operations"),
     }
 }
@@ -119,6 +125,19 @@ pub fn parse_simulation(text: &str) -> Vec<Action> {
     actions
 }
 
+/// Reads apt's list of packages it would not upgrade. apt 3 and older releases name the list differently.
+pub fn parse_kept_back(text: &str) -> Vec<String> {
+    let mut lines = text.lines().skip_while(|line| !matches!(line.trim_end(), "The following packages have been kept back:" | "Not upgrading:"));
+    lines.next();
+    let mut names: Vec<String> = lines
+        .take_while(|line| line.starts_with(' '))
+        .flat_map(str::split_whitespace)
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names
+}
+
 /// Returns (systemd units, setuid files) from a `dpkg-deb --contents` listing.
 pub fn scan_listing(listing: &str) -> (Vec<String>, Vec<String>) {
     let (mut units, mut setuid) = (Vec::new(), Vec::new());
@@ -164,11 +183,15 @@ pub fn dpkg_consistent() -> bool {
     run(&mut command).is_ok_and(|ran| ran.success && ran.stdout.trim().is_empty())
 }
 
-fn simulate(operation: &Operation, files: &[PathBuf]) -> Result<Vec<Action>, Refusal> {
+fn simulation_text(operation: &Operation, files: &[PathBuf]) -> Result<String, Refusal> {
     let mut command = apt_get();
     command.arg("-s");
     with_operation(&mut command, operation, files);
-    Ok(parse_simulation(&require(&mut command, "plan_failed", "apt simulation")?.stdout))
+    Ok(require(&mut command, "plan_failed", "apt simulation")?.stdout)
+}
+
+fn simulate(operation: &Operation, files: &[PathBuf]) -> Result<Vec<Action>, Refusal> {
+    Ok(parse_simulation(&simulation_text(operation, files)?))
 }
 
 /// apt treats an unknown name as a regex and honors `name-` and `name+` suffixes.
@@ -180,6 +203,7 @@ fn check_names_resolved(operation: &Operation, actions: &[Action]) -> Result<(),
     let (names, satisfied): (&Vec<String>, fn(&str) -> bool) = match operation {
         Operation::PackageInstall { names } => (names, is_installed),
         Operation::PackageRemove { names } => (names, |_| false),
+        Operation::PackageUpgrade {} => return Ok(()),
         _ => unreachable!("apt receives only package operations"),
     };
     match names.iter().find(|name| !acted(name) && !satisfied(name)) {
@@ -190,14 +214,15 @@ fn check_names_resolved(operation: &Operation, actions: &[Action]) -> Result<(),
 
 pub fn plan(id: u64, operation: &Operation) -> Result<Impact, Refusal> {
     require(apt_get().arg("update"), "plan_failed", "apt-get update")?;
-    let actions = simulate(operation, &[])?;
+    let text = simulation_text(operation, &[])?;
+    let actions = parse_simulation(&text);
     check_names_resolved(operation, &actions)?;
     if let Some(action) = actions.iter().find(|a| a.kind == ActionKind::Remove && is_essential(&a.target)) {
         return Err(Refusal::new("denied", format!("{} is an essential package", action.target)));
     }
 
-    let mut impact = Impact { actions, ..Impact::default() };
-    if matches!(operation, Operation::PackageInstall { .. }) {
+    let mut impact = Impact { actions, kept_back: parse_kept_back(&text), ..Impact::default() };
+    if matches!(operation, Operation::PackageInstall { .. } | Operation::PackageUpgrade {}) {
         let mut download = apt_get();
         download.args(["-y", "-d"]);
         with_operation(&mut download, operation, &[]);
@@ -237,6 +262,7 @@ pub fn apply(id: u64, operation: &Operation, impact: &Impact) -> Result<(), Stri
         return Ok(());
     }
     let files = artifact_paths(id, impact);
+    let auto_before = auto_installed();
     let mut command = apt_get();
     command.arg("-y");
     // Anything apt wants beyond the kept files was not approved.
@@ -249,19 +275,38 @@ pub fn apply(id: u64, operation: &Operation, impact: &Impact) -> Result<(), Stri
         return Err(ran.tail());
     }
     // apt marks every file argument as manually installed.
-    if let Operation::PackageInstall { names } = operation {
-        let dependencies = impact.actions.iter().filter(|a| a.kind == ActionKind::Install && !names.contains(&a.target));
+    let requested: &[String] = match operation {
+        Operation::PackageInstall { names } => names,
+        _ => &[],
+    };
+    if !files.is_empty() {
+        let automatic = impact.actions.iter().filter(|a| {
+            !requested.contains(&a.target) && (a.kind == ActionKind::Install || auto_before.contains(&a.target))
+        });
         let mut mark = tool("apt-mark");
-        mark.arg("auto").args(dependencies.map(|a| a.target.as_str()));
+        mark.arg("auto").args(automatic.map(|a| a.target.as_str()));
         let _ = run(&mut mark);
     }
     Ok(())
 }
 
+fn auto_installed() -> Vec<String> {
+    let mut command = tool("apt-mark");
+    command.arg("showauto");
+    run(&mut command).map(|ran| ran.stdout.lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
+fn unit_active(unit: &str) -> bool {
+    let mut command = tool("systemctl");
+    command.args(["is-active", "--quiet", unit]);
+    run(&mut command).is_ok_and(|ran| ran.success)
+}
+
 pub fn verify(operation: &Operation, actions: &[Action]) -> (bool, String) {
-    let (names, want_installed) = match operation {
+    let (names, want_installed): (&[String], bool) = match operation {
         Operation::PackageInstall { names } => (names, true),
         Operation::PackageRemove { names } => (names, false),
+        Operation::PackageUpgrade {} => (&[], true),
         _ => unreachable!("apt receives only package operations"),
     };
     if !dpkg_consistent() {
@@ -277,7 +322,32 @@ pub fn verify(operation: &Operation, actions: &[Action]) -> (bool, String) {
             return (false, format!("{} is at {current:?}, expected {:?}", action.target, action.to));
         }
     }
+    if matches!(operation, Operation::PackageUpgrade {}) {
+        if let Some(unit) = HEALTH_UNITS.iter().find(|unit| !unit_active(unit)) {
+            return (false, format!("{unit} is not active after the upgrade"));
+        }
+    }
     (true, "dpkg state matches the approved transaction".to_string())
+}
+
+/// Returns the name of the newest kernel file. dpkg keeps build times, so the newest build wins.
+pub fn newest_kernel(files: &[(String, std::time::SystemTime)]) -> Option<&str> {
+    files.iter().filter(|(name, _)| name.starts_with("vmlinuz-")).max_by_key(|(_, built)| *built).map(|(name, _)| name.as_str())
+}
+
+/// True when a newer kernel is installed than the one running. Debian has no
+/// `/run/reboot-required` without update-notifier, so the kernel files decide.
+pub fn reboot_required() -> bool {
+    let running = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let files: Vec<(String, std::time::SystemTime)> = fs::read_dir("/boot")
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|entry| Some((entry.file_name().into_string().ok()?, entry.metadata().ok()?.modified().ok()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    newest_kernel(&files).is_some_and(|newest| newest != format!("vmlinuz-{}", running.trim()))
 }
 
 fn describe(label: &str, result: std::io::Result<Ran>) -> String {
@@ -328,6 +398,24 @@ mod tests {
         assert_eq!(actions[1].to.as_deref(), Some("2.41-12"));
         assert_eq!(actions[2].kind, ActionKind::Install);
         assert_eq!(actions[2].to.as_deref(), Some("14.1.1-1+b4"));
+    }
+
+    #[test]
+    fn reads_kept_back_packages_in_both_apt_formats() {
+        let old = "Reading package lists...\nThe following packages have been kept back:\n  zed alpha\n  mid\nThe following packages will be upgraded:\n  other\n";
+        assert_eq!(parse_kept_back(old), ["alpha", "mid", "zed"]);
+        let new = "Upgrading:\n  other\n\nNot upgrading:\n  held\n\nSummary:\n  Upgrading: 1\n";
+        assert_eq!(parse_kept_back(new), ["held"]);
+        assert!(parse_kept_back("Upgrading:\n  other\n").is_empty());
+    }
+
+    #[test]
+    fn finds_the_newest_kernel_by_build_time() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let at = |seconds| UNIX_EPOCH + Duration::from_secs(seconds);
+        let files = [("config-9".to_string(), at(9)), ("vmlinuz-6.1".to_string(), at(1)), ("vmlinuz-6.12".to_string(), at(2))];
+        assert_eq!(newest_kernel(&files), Some("vmlinuz-6.12"));
+        assert_eq!(newest_kernel(&[]), None);
     }
 
     #[test]
