@@ -67,7 +67,7 @@ A change is `applied` only if the command succeeded and every planned action rea
 
 ## Policy
 
-The administrator owns `/etc/agent-os/hostd-policy.json`. An install preserves an existing file. A missing or malformed policy refuses every plan.
+The administrator owns `/etc/agent-os/hostd-policy.json`. The package copies the default only when the file is absent, so an upgrade preserves it. A missing or malformed policy refuses every plan.
 
 | Field | Meaning |
 |---|---|
@@ -85,6 +85,9 @@ A package install is automatic only when all of these are true:
 Removals always need approval. Removing an essential package is refused outright. Installs pass `--no-remove`, so an install can never remove a package.
 
 ## Package names
+
+The default `protected_package_prefixes` includes `agentos`, so a plan that changes the broker's own package always names it as protected. An approved removal still fails while any project exists, because the package's `prerm` script refuses it.
+
 
 A name must match Debian's characters, without `*`, `/`, `:`, or `=`. `.` and `+` are legal in Debian names and are also regex syntax for apt, and apt reads a `name-` suffix as a removal. A plan therefore stands only if apt acted on exactly the requested names. Anything else is refused as `unknown_package`.
 

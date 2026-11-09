@@ -1,6 +1,6 @@
 # Agent OS threat model
 
-Status: Phase 4, reviewed 2026-11-08. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
+Status: Phase 5 in progress, reviewed 2026-11-09. Revise this file for every change that touches privilege escalation, credentials, filesystem mounts, networking, or GUI capture.
 
 Check names in this document are rows in [`tests/isolation/checks.tsv`](../tests/isolation/checks.tsv). The [isolation design](ISOLATION.md) explains the controls.
 
@@ -72,6 +72,8 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Call `hostd` or read its state from a project | T1, T2 | A4, A5, A8 | Private `/run`, socket mode, `SO_PEERCRED`, file modes | `hostd_socket`, `hostd_client`, `hostd_state_read`, `tests/hostd/guest/privileges.sh` |
 | Impersonate the system agent or administrator | T1, T2, T3 | A4, A5 | Identity comes only from the kernel, and unknown fields are rejected | `tests/hostd/guest/privileges.sh` |
 | Approve one's own change | T3 | A4, A5 | Only peer UID 0 can decide | `tests/hostd/guest/packages.sh` |
+| Remove the broker's own package | T3 | A4, A5, A9 | Removal always needs human approval, `agentos` is a protected package, and `prerm` refuses while any project exists | `tests/hostd/guest/packages.sh`, `tests/packaging/guest/lifecycle.sh` |
+| Leave the host forwarding packets after Agent OS is removed | T5 | A4 | Stopping the firewall turns forwarding off before it deletes the policy | `tests/packaging/guest/lifecycle.sh` |
 | Change the transaction or package contents after approval | T3, T4 | A4, A5 | Apply installs only the hashed archives kept by the plan, and compares a new simulation | `tests/hostd/guest/packages.sh`, `tests/hostd/guest/toolchains.sh` |
 | Fill the broker's connection slots | T3 | A9 | One time limit per request, refused lock waits, separate administrator socket | `tests/hostd/guest/privileges.sh` |
 | Smuggle apt options, paths, regexes, or removal suffixes through a name | T3 | A4, A5 | Character check, and apt must act on exactly the requested names | `tests/hostd/guest/packages.sh` |

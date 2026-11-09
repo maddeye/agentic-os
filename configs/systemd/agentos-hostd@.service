@@ -3,7 +3,7 @@ Description=Agent OS host-maintenance broker request
 CollectMode=inactive-or-failed
 
 [Service]
-ExecStart=/usr/local/sbin/agentos-hostd
+ExecStart=/usr/sbin/agentos-hostd
 StandardInput=socket
 StandardOutput=journal
 StandardError=journal

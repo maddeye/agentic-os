@@ -50,7 +50,7 @@ Bash suits root-run orchestration of existing tools. Rust is here because a root
 
 ## The ways to hurt yourself
 
-1. **Running the product on the dev machine.** `packaging/install.sh` and `bin/agentos` create accounts, enable services, and load a firewall whose forward chain ends in `drop`, which cuts off Docker's bridge traffic. Run them only in the VM, where `tests/vm/deploy` installs them and `tests/vm/vm ssh` reaches them.
+1. **Running the product on the dev machine.** The `agentos` package and `bin/agentos` create accounts, enable services, and load a firewall whose forward chain ends in `drop`, which cuts off Docker's bridge traffic. Run them only in the VM, where `tests/vm/deploy` installs the package and `tests/vm/vm ssh` reaches them.
 2. **Colliding on the VM.** Every checkout shares the container name `agentos-test-vm` and SSH port 10022, and booting force-removes that container. A VM started from one worktree kills one running from another. Run `docker ps` first, run one suite at a time per machine, and stop the VM with `tests/vm/vm down`. Kill only processes you started, by the PID you captured.
 3. **Trusting what a project wrote.** Treat every path, name, file, and backup a project can touch as attacker-controlled. Root-run code stays out of project directories: it starts a command as the project instead, as `agentos project gui` does. [Rules for later phases](doc/THREAT_MODEL.md#rules-for-later-phases) lists the specific traps, and it is required reading before changing root-run code.
 4. **Building outside the pinned container.** Use `packaging/build`. It compiles with Debian's toolchain against the glibc that runs the binaries. A bare `cargo` on the dev machine links the wrong libraries and litters `crates/hostd/target`, which Git does not ignore.
@@ -64,8 +64,8 @@ A feature here is rarely one code path. Before calling work done, walk this list
 - **Interruptions.** Cover a kill mid-operation, a power cut, a failed first attempt, and a concurrent start.
 - **The way back.** Delete removes everything create made. Restore keeps a `pre-restore` snapshot. A `hostd` outcome records its undo command. Give anything new the same exit.
 - **Sandbox.** Run the feature under `native-restricted`, where `/run` is empty and `/dev/shm` is private to each command. If it needs a new opening, that is a threat-model change.
-- **Install path.** `packaging/install.sh` names every file it installs, and `tests/vm/deploy` copies only `bin`, `configs`, `packaging`, `tests`, and `.build/bin`. A new file reaches the VM once both know about it.
-- **Administrator-owned config.** An install preserves an existing `hostd-policy.json` and `storage.conf`, so a changed default reaches fresh installs only.
+- **Install path.** `packaging/debian/agentos.install` names every file the package ships, and `packaging/build` copies only `bin`, `configs`, and `packaging/debian` into the package source. A new file reaches the VM once both know about it. A new state or service needs an answer at upgrade, remove, and purge in the maintainer scripts next to that file.
+- **Administrator-owned config.** The package copies `hostd-policy.json` and `storage.conf` only when they are absent, so a changed default reaches fresh installs only.
 - **CI.** A new suite needs a row in the matrix in `.github/workflows/tests.yml`. A new VM build input needs adding to the cache key there.
 - **Docs and threat model.** See [Docs](#docs).
 
@@ -90,6 +90,7 @@ Finish with every full suite your change touches:
 | Snapshots, restore, quotas, backups | `tests/storage/run` | 4 |
 | `crates/hostd`, policy, toolchain catalog | `tests/hostd/run` | 4 |
 | `bin/agentos-gui`, `configs/gui/packages` | `tests/gui/run` | 5 |
+| `packaging/` | `tests/packaging/run` | not yet measured |
 | `tests/vm/` | `tests/vm/test-lifecycle` | 2 |
 
 Most of these outlast a default command timeout, so run them in the background. A suite is done when it exits 0. All except isolation also end on a `PASS:` line.

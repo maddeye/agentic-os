@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+# Removal would strand each project's account, slice, and namespace. This runs
+# before the units stop, so a refusal changes nothing.
+if [ "$1" = remove ] && [ -n "$(find /var/lib/agent-os/metadata/projects -mindepth 1 ! -name '*.tmp' -print -quit 2>/dev/null)" ]; then
+	echo "agentos: delete every project before removing this package" >&2
+	exit 1
+fi
+
+#DEBHELPER#

@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+execute_after_dh_install:
+	install -D -m 0644 configs/gui/packages debian/agentos/usr/share/agent-os/gui-packages
+	install -D -m 0644 configs/toolchains/catalog.json debian/agentos/usr/share/agent-os/toolchains.json
+
+# The release binaries carry no debug info.
+override_dh_dwz:
+
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
+
+# Every agentos-netns@ instance requires the firewall, so restarting the
+# firewall would take down the network of every running project. The postinst
+# reloads it instead.
+override_dh_installsystemd:
+	dh_installsystemd --no-stop-on-upgrade --no-restart-after-upgrade \
+		agentos-firewall.service agentos-hostd.socket agentos-hostd-admin.socket agentos-storage.timer

@@ -6,5 +6,5 @@ After=agentos-firewall.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/agentos-netns up %i
-ExecStop=/usr/local/sbin/agentos-netns down %i
+ExecStart=/usr/sbin/agentos-netns up %i
+ExecStop=/usr/sbin/agentos-netns down %i

@@ -7,6 +7,11 @@ RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /usr/share/agent-os/agentos.nft
 # Forwarding starts only after the policy has loaded.
 ExecStartPost=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1
+# The file replaces the table in one transaction, so reloading leaves no gap.
+ExecReload=/usr/sbin/nft -f /usr/share/agent-os/agentos.nft
+# Forwarding ends before the policy does.
+ExecStop=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0
+ExecStop=/usr/sbin/nft destroy table inet agentos
 
 [Install]
 WantedBy=multi-user.target

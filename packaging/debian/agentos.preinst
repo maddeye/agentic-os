@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+# Snapshots and quotas exist only on Btrfs. Refusing here leaves nothing unpacked.
+path=/var/lib/agent-os
+while [ ! -e "$path" ]; do
+	path=$(dirname "$path")
+done
+if [ "$(stat -f -c %T "$path")" != btrfs ]; then
+	echo "agentos: /var/lib/agent-os must be on Btrfs" >&2
+	exit 1
+fi
+
+#DEBHELPER#

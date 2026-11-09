@@ -80,6 +80,16 @@ eq "a changed archive is refused" 1 "$(status_of hostctl_ change apply "$id")"
 eq "a changed archive makes the change stale" stale "$(hostctl_ change show "$id" | field state)"
 ! installed aos-test-tamper; eq "a changed archive installs nothing" 0 $?
 
+# The package that holds the broker. A human decides, and a live project still refuses.
+plan 3 package remove agentos
+id=$(field id <<<"$change")
+eq "removing the broker package is flagged as protected" 1 "$(field decision.reasons <<<"$change" | grep -c 'agentos is a protected package')"
+agentos system change approve "$id" >/dev/null
+eq "an approved removal fails while projects exist" 1 "$(status_of hostctl_ change apply "$id")"
+eq "the broker stays installed" 0 "$(status_of test -x /usr/sbin/agentos-hostd)"
+eq "the broker stays reachable" 0 "$(status_of hostctl_ status)"
+eq "the failed removal leaves dpkg consistent" True "$(hostctl_ status | field dpkg_consistent)"
+
 # Policy can allow a clean install, and only that.
 set_policy '{"automatic_packages":["hello","aos-test-service","aos-test-setuid","apt-utils","aos-test-clean","aos-test-path"]}'
 plan 0 package install hello

@@ -4,5 +4,5 @@ ARG APT_SNAPSHOT
 RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s/ trixie main\n' "$APT_SNAPSHOT" > /etc/apt/sources.list \
  && rm -f /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
- && apt-get install -y --no-install-recommends cargo rustc ca-certificates gcc libc6-dev \
+ && apt-get install -y --no-install-recommends cargo rustc ca-certificates build-essential debhelper \
  && rm -rf /var/lib/apt/lists/*
