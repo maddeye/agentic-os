@@ -90,10 +90,10 @@ Finish with every full suite your change touches:
 | Snapshots, restore, quotas, backups | `tests/storage/run` | 4 |
 | `crates/hostd`, policy, toolchain catalog | `tests/hostd/run` | 4 |
 | `bin/agentos-gui`, `configs/gui/packages` | `tests/gui/run` | 5 |
-| `packaging/` | `tests/packaging/run` | not yet measured |
-| `packaging/image`, `packaging/build-image`, the `vm image` verb | `tests/image/run` | not yet measured |
-| `packaging/image`, `packaging/build-iso`, the `vm installer` verb | `tests/installer/run` | not yet measured |
-| Anything that can affect long-running projects | `tests/soak/run` (one hour) or `tests/soak/run 360` | not yet measured |
+| `packaging/` | `tests/packaging/run` | 3 |
+| `packaging/image`, `packaging/build-image`, the `vm image` verb | `tests/image/run` | 5 |
+| `packaging/image`, `packaging/build-iso`, the `vm installer` verb | `tests/installer/run` | 10 |
+| Anything that can affect long-running projects | `tests/soak/run` (one hour) or `tests/soak/run 360` | 12 |
 | `tests/vm/` | `tests/vm/test-lifecycle` | 2 |
 
 Most of these outlast a default command timeout, so run them in the background. A suite is done when it exits 0. All except isolation also end on a `PASS:` line.
@@ -149,7 +149,7 @@ Keep them true in the same change:
 - Write subjects in the imperative. Use the body for why and for the decisions a reader would question.
 - Keep one phase or vertical slice per PR.
 - State verification as what ran and what it reported: suites, check counts, and a link to the workflow run. Add a known-limits section naming what stayed untested.
-- Pull requests get no automatic checks. Each workflow run uses about 29 minutes of the private repository's Actions allowance, plus an unmeasured soak job, so start it once, when the branch is ready to merge.
+- Pull requests get no automatic checks. Each workflow run uses about 60 minutes of the private repository's Actions allowance, so start it once, when the branch is ready to merge.
 
 ```bash
 gh workflow run Tests --ref BRANCH

@@ -1043,31 +1043,25 @@ A clean installation must demonstrate:
 
 These decisions must be resolved through prototyping, investigation, or explicit architectural review.
 
+A question leaves this list when the decision log in section 15 settles it.
+
 ### Host
 
-- Final Debian image construction process.
-- Installer implementation.
 - System configuration model.
-- Bootloader and recovery strategy.
 - Debian versus Arch if future requirements change.
 
 ### Native Execution
 
-- Persistent project UID allocation and recycling.
-- Exact systemd service and scope model.
 - Required namespace boundaries.
-- Whether bubblewrap should be used for restricted native execution.
 - IPC and D-Bus isolation.
 - Network policies for autonomous agents.
 
 ### Packages and Credentials
 
 - Project-scoped alternatives for installers expecting APT.
-- Global toolchain verification and atomic publication.
 - Credential brokering and expiration.
 - Per-project Git and registry authentication.
 - System-agent approval interface.
-- Rules governing autonomous global modifications.
 
 ### Filesystem
 
