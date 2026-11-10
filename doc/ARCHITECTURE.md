@@ -998,8 +998,8 @@ Use typed checks or unprivileged execution whenever possible.
 - [x] Test normal upgrades.
 - [x] Test system recovery.
 - [x] Test preservation of persistent project data.
-- [ ] Document installation and maintenance.
-- [ ] Run extended unattended tests with multiple project agents.
+- [x] Document installation and maintenance.
+- [x] Run extended unattended tests with multiple project agents.
 
 **Exit criterion:** Agent OS can be installed, administered remotely, and used for its core workflows without manual post-install workarounds.
 
