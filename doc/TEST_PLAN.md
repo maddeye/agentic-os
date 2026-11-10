@@ -188,30 +188,34 @@ tests/soak/run [SECONDS]
 
 The last line is `PASS: soak`. `SECONDS` defaults to 3600 and must be at least 360. Results go to `.vm/results/soak-TIMESTAMP/`. Three projects, `one`, `two`, and `three`, each run Pi in a detached loop against a local stub model. Each turn writes a file and records its hash in a ledger. A fourth project, `noisy`, has tight limits.
 
-Once a minute, a tick arrives over SSH from outside the VM. A tick that fails, or a host that does not answer, fails the run:
+Once a minute, a tick arrives over SSH from outside the VM. It samples the task count and memory of the project slice as the quietest of five readings a second apart, so a harness turn in progress does not count as growth. A tick that fails, or a host that does not answer, fails the run:
 
 - Each project cannot read another project's file, and the owner can.
 - Each agent and model is still running.
 - Each project takes a snapshot and prunes under load.
 - `hostd` answers.
-- `noisy` overruns its memory limit, overruns its process limit, and spins the CPU.
+- `noisy` stays under and then overruns its memory limit and its process limit. Two spinners in `noisy` share its CPU quota.
 
 After the agents finish, the suite checks that:
 
-- Each project completed at least one turn each minute, without a problem, and its files match the ledger.
+- Each project never went more than 60 seconds without finishing a turn, from the start of the run to its end. Every turn had no problem, and the files, read back after dropping caches, match the ledger.
 - Each project kept five automatic snapshots, and the oldest one restores to an earlier ledger.
-- No project task and no broker process remains, the task count did not grow, and disk growth stayed under 2 GiB.
+- No project task and no broker process remains.
+- Between the first and second half of the run, the median task count grew by at most 20, the median project memory grew by at most 128 MiB, and the median available memory fell by at most 256 MiB.
+- Disk growth stayed under 512 MiB. The agents write about 33 MiB a minute, so this bound can catch broken retention only in a run longer than about 16 minutes. In `tests/soak/run 360`, only the snapshot count checks retention.
 - Available memory, after dropping caches, is within 256 MiB of the idle baseline.
-- The kernel log has no fault. `noisy` hit its memory limit, and no other project lost a process to memory.
-- No unit failed, and `delete` leaves no project and no account.
+- The kernel log has no fault. `noisy` hit its memory limit on every tick, and no other project lost a process to memory.
+- No unit failed, and `delete` leaves no project and no account. A run that failed any check, in a tick or after it, keeps its projects for inspection instead. The steady projects are then restored to their oldest snapshot, and their `pre-restore` snapshot holds the state at the end of the run.
 
 The suite does not reboot during the run, because a reboot does not resume commands. `tests/integration/run` covers reboots, and its `limits` step covers memory pressure on the whole project slice.
 
-One run on 2026-11-09 lasted 3600 seconds in the [baseline](BASELINE.md) VM, with 4 vCPUs and 4 GiB of RAM. It passed all 60 ticks and completed 2060 harness turns. Available memory stayed at 3376 MiB or more, and returned to 3561 MiB from an idle baseline of 3580 MiB. Disk use grew by 259 MiB. `noisy` hit its memory limit 60 times, and no other project lost a process.
+One run on 2026-11-09 lasted 3600 seconds in the [baseline](BASELINE.md) VM, with 4 vCPUs and 4 GiB of RAM. It passed all 60 ticks and completed 2060 harness turns. Available memory stayed at 3376 MiB or more, and returned to 3561 MiB from an idle baseline of 3580 MiB. Disk use grew by 259 MiB. `noisy` hit its memory limit 60 times, and no other project lost a process. That run predates the current per-minute, median, and under-limit checks. Its ledgers and samples fit them: the longest gap between turns was 6 seconds, and the medians did not change between the two halves.
+
+Two runs on 2026-11-10 lasted 360 seconds each in the same VM, with the per-minute, median, and under-limit checks. Both passed all 6 ticks and completed 237 harness turns, with a longest gap of 6 seconds between turns. Disk use grew by 234 and 240 MiB. The second run used the current five-reading samples, and every task sample read 9. Another run of that length broke each check on purpose: it stalled one agent for 90 seconds, leaked tasks and memory, wrote 600 MiB once, removed `noisy`'s CPU quota, tightened its memory and task limits, and skipped its later memory overruns. The turn-gap, task, project memory, available memory, disk, under-limit, CPU, and per-tick memory checks each went red. A last run leaked only tasks and memory against the five-reading samples. Its task, project memory, and available memory checks went red, and it kept its projects for inspection. A run whose ticks failed, with every check after them passing, also kept its projects. A third clean run of 360 seconds, with the final scripts, passed all 6 ticks, and `delete` left no project and no account.
 
 ## Run the suites in GitHub Actions
 
-`.github/workflows/tests.yml` runs only when you start it, because each run uses about 29 minutes of the private repository's Actions allowance. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.
+`.github/workflows/tests.yml` runs only when you start it, because each run uses about 29 minutes of the private repository's Actions allowance, not counting the soak job, which is not yet measured. To start it, use the Actions tab or run `gh workflow run Tests --ref BRANCH`. GitHub offers both only after the workflow file is on `main`.
 
 The `prepare` job fails if the runner has no `/dev/kvm`. It also runs the Rust unit tests. It builds the VM baseline and the two Docker images once, and stores them in the Actions cache. To rebuild them, change an input of the cache key in the workflow, such as `tests/vm/image.lock`.
 

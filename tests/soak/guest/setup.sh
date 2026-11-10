@@ -19,7 +19,7 @@ for name in "${steady[@]}"; do
 		rm $node_dir.tar.xz
 		ln -sf ../lib/$node_dir/bin/node ../lib/$node_dir/bin/npm -t ~/.local/bin
 		npm install --global --silent --prefix ~/.local '@earendil-works/pi-coding-agent@$PI_VERSION'
-	" 2>&1 | tail -3
+	" 2>&1 | tee "$state/$name.install.log" | tail -3
 	agent "$name" -- bash -c 'cat > ~/.pi/agent/models.json' <<'JSON'
 {"providers":{"stub":{"baseUrl":"http://127.0.0.1:18080/v1","api":"openai-completions","apiKey":"not-a-secret","models":[{"id":"stub-1"}]}}}
 JSON
@@ -33,7 +33,9 @@ mem_available > "$state/baseline-memory"
 data_used > "$state/baseline-disk"
 
 # Workers outlast the ticks by a minute, so the last tick still finds them running.
-deadline=$(( $(date +%s) + duration + 60 ))
+start=$(date +%s)
+deadline=$(( start + duration + 60 ))
+echo "$start $deadline" > "$state/window"
 for name in "${steady[@]}"; do
 	agentos project run --detach "$name" -- /usr/bin/python3 "$guest/integration/guest/stub_model.py" >/dev/null
 	agentos project run --detach "$name" -- /bin/bash "$guest/soak/guest/agent.sh" "$name" "$deadline" >/dev/null
