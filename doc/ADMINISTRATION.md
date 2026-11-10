@@ -14,12 +14,12 @@ Choose one way to install:
 
 To install from the ISO:
 
-1. Put your SSH public key in a file named `agentos-admin.pub` on a USB stick, or keep it ready to paste.
-2. Run `packaging/build-iso` on a build machine, and write the ISO to a USB stick.
+1. Put your SSH public key in a file named `agentos-admin.pub` on a second USB stick, or keep it ready to paste. The installer does not look for the key on its own medium.
+2. Run `tests/vm/vm build` and then `packaging/build-iso` on a build machine, and write the ISO from `.build/installer/` to a USB stick.
 3. Turn off Secure Boot, and boot the machine from the stick.
-4. Press Enter on the console you use, and answer the installer's four prompts.
+4. Press Enter on the console you use, and answer the installer's prompts. It asks for the key and the disk, and then for the disk's name again to confirm.
 5. Copy the host key fingerprint from the installer's report.
-6. Reboot the machine, and remove the stick.
+6. When the installer asks, remove the stick and press Enter to restart.
 
 The install erases the whole disk.
 
@@ -128,7 +128,8 @@ The upgrade keeps `hostd-policy.json` and `storage.conf`. New defaults in those 
 | `agentos project delete` | Run the same command again. |
 | `agentos project restore` | Run the same command again, with the same snapshot. |
 | `agentos project recover` | Run the same command again, with the same backup. |
-| The installer | Boot the medium, and run the installer again. |
+| A fresh install from the installer | Boot the medium, and run the installer again. |
+| A repair from the installer | Boot the medium, and type `repair` again. Pressing Enter at that prompt erases the whole disk. |
 
 If `status` shows a `failed` change and `dpkg_consistent` is false, repair `dpkg` by hand.
 
@@ -146,7 +147,7 @@ If `status` shows a `failed` change and `dpkg_consistent` is false, repair `dpkg
 	sudo agentos project restore my-app --snapshot ID --yes
 	```
 
-Nothing takes snapshots on its own. Run `agentos project snapshot NAME` before risky work, or add `--auto` for one that retention can remove. The `cache` and `tmp` directories are empty after a restore.
+Only `restore` takes a snapshot on its own. Run `agentos project snapshot NAME` before risky work, or add `--auto` for one that retention can remove. The `cache` and `tmp` directories are empty after a restore.
 
 ## Back up a project
 
@@ -161,8 +162,12 @@ Run the backup from another machine, so that a compromised host cannot reach old
 2. Pull the backup, and encrypt it on the other machine:
 
 	```bash
-	ssh admin@HOST 'sudo agentos project backup my-app --snapshot ID' | age -r RECIPIENT > my-app.backup.age
+	set -o pipefail
+	ssh admin@HOST 'sudo agentos project backup my-app --snapshot ID' | age -r RECIPIENT > my-app.backup.age.tmp \
+		&& mv my-app.backup.age.tmp my-app.backup.age
 	```
+
+	Without `pipefail`, a dropped connection or a failed backup still leaves a file that looks complete. The rename happens only after the whole pipeline succeeds.
 
 To restore on a new host, decrypt the backup and pipe it to `sudo agentos project recover`. The host needs free space for one extra copy of the backup. If the project selected a toolchain, install that toolchain again.
 
@@ -171,7 +176,7 @@ To restore on a new host, decrypt the backup and pipe it to `sudo agentos projec
 A repair replaces the root and the boot loader, and keeps the data partition. Every project, snapshot, and audit record stays. Before you need a repair, keep copies of `/etc/agent-os/hostd-policy.json` and `/etc/agent-os/storage.conf` off the host, because the repair resets both.
 
 1. Boot the install medium, give the administrator's key, and choose the disk.
-2. Type `repair` at the prompt.
+2. Type `repair` at the prompt, and then the disk's name to confirm. Pressing Enter at the `repair` prompt erases the whole disk.
 3. Log in as `admin`. The host has new host keys, so remove its old entry from your `known_hosts`, and compare the new fingerprint with the report.
 4. Copy back your `hostd-policy.json` and `storage.conf`.
 5. Install each toolchain again that a project selected:
@@ -186,11 +191,11 @@ The repaired host has the ISO's Agent OS version. If that version is older than 
 
 ## Respond to low disk space
 
-Agent OS acts on its own when free space runs low. [Disk pressure](STORAGE.md#disk-pressure) lists the thresholds. A project's commands stop when free space falls below 5% after pruning.
+Agent OS acts on its own when free space runs low. [Disk pressure](STORAGE.md#disk-pressure) lists the thresholds. Below 10% free, each project keeps one automatic snapshot. If free space is still below 5%, the commands of the largest project stop. The check repeats every minute, so a command you start in that project stops again until space is free.
 
 To free space:
 
-1. Find the largest project with `sudo agentos project inspect NAME`.
+1. Run `sudo agentos project inspect NAME` for each project, and compare `disk_used_bytes`. It counts what the project references now, so it does not show what deleting a snapshot would free.
 2. Remove snapshots you no longer need with `sudo agentos project snapshot-delete NAME ID --yes`.
-3. Remove old automatic snapshots with `sudo agentos project prune NAME --keep N`.
-4. Start the stopped commands again.
+3. If you need more, remove each project's last automatic snapshot with `sudo agentos project prune NAME --keep 0`. That snapshot may be the `pre-restore` one that undoes a restore.
+4. Once free space is above 5%, start the stopped commands again.

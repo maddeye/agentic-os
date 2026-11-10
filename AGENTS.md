@@ -101,7 +101,7 @@ Most of these outlast a default command timeout, so run them in the background. 
 When one fails:
 
 - Read `.vm/results/` and `.vm/serial.log`. A failed suite usually leaves the VM up, and its disks stay until the next reset, so `tests/vm/vm ssh` can inspect the wreck.
-- Check the log for a failed URL. The integration, hostd, and GUI suites download while they run, and a download failure means rerun.
+- Check the log for a failed URL. The integration, hostd, GUI, and soak suites download while they run, and a download failure means rerun.
 - Use `tests/vm/vm build --force` to rebuild the baseline. `.vm/baseline` is read-only by design.
 
 No linter or formatter exists for this repo. Run `bash -n` on shell you touch and match the code around it, including tabs in shell.
@@ -149,7 +149,7 @@ Keep them true in the same change:
 - Write subjects in the imperative. Use the body for why and for the decisions a reader would question.
 - Keep one phase or vertical slice per PR.
 - State verification as what ran and what it reported: suites, check counts, and a link to the workflow run. Add a known-limits section naming what stayed untested.
-- Pull requests get no automatic checks. Each workflow run uses about 29 minutes of the private repository's Actions allowance, so start it once, when the branch is ready to merge.
+- Pull requests get no automatic checks. Each workflow run uses about 29 minutes of the private repository's Actions allowance, plus an unmeasured soak job, so start it once, when the branch is ready to merge.
 
 ```bash
 gh workflow run Tests --ref BRANCH

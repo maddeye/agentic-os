@@ -16,7 +16,7 @@ step() { # <script> [args...]
 
 "$repo/tests/vm/deploy"
 mkdir -p "$out"
-step setup "$duration"
+step setup "$duration" | tee "$out/setup.log"
 
 # Each tick arrives over SSH from outside the VM, so a host that stops answering fails the run.
 echo "### ticks for $duration seconds"
@@ -27,7 +27,8 @@ while (( SECONDS < end )); do
 	started=$SECONDS
 	ticks=$((ticks + 1))
 	echo "### tick $ticks at ${started}s" >> "$out/ticks.log"
-	if ! timeout 120 "$vm" ssh "sudo $guest/tick.sh" >> "$out/ticks.log" 2>&1; then
+	# The guest's own limit is shorter, so a slow tick cannot keep the metadata lock from the next one.
+	if ! timeout 120 "$vm" ssh "sudo timeout 110 $guest/tick.sh" </dev/null >> "$out/ticks.log" 2>&1; then
 		failed=$((failed + 1))
 		echo "FAIL: tick $ticks"
 	fi
@@ -36,8 +37,8 @@ while (( SECONDS < end )); do
 done
 
 status=0
-step verify "$duration" | tee "$out/verify.log" || status=1
-"$vm" ssh 'sudo tar -C /var/tmp/aos-soak -cf - .' | tar -C "$out" -xf -
+step verify "$failed" | tee "$out/verify.log" || status=1
+"$vm" ssh 'sudo tar -C /var/tmp/aos-soak -cf - .' | tar -C "$out" -xf - || { echo "FAIL: copying the results"; status=1; }
 echo "results: $out"
 echo "ticks=$ticks failed=$failed"
 (( status == 0 && failed == 0 )) || exit 1

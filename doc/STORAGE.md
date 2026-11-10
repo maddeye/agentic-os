@@ -82,6 +82,6 @@ Quotas have no measurable cost at this scale. The Btrfs documentation warns that
 
 | Question | Recommendation | Needed by |
 |---|---|---|
-| Compression | Mount with `compress=zstd:1`. It saved 44% and made unpacking about 60% slower. The mount belongs to the installer. | Phase 5 |
-| Backup encryption, signing, schedule, and incremental sends | Compare restic with `btrfs send -p` once a real backup target exists. | Phase 5 |
+| Compression | Mount with `compress=zstd:1`. It saved 44% and made unpacking about 60% slower. The mount belongs to the installer. | Deferred past Phase 5: the installer does not set it yet. |
+| Backup encryption, signing, schedule, and incremental sends | Compare restic with `btrfs send -p` once a real backup target exists. | Deferred past Phase 5: no real backup target exists yet. |
 | Automatic snapshots at task boundaries | Have a harness or the system agent call `snapshot --auto`. Nothing calls it yet. | First harness integration |
