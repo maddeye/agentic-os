@@ -1,2 +1,7 @@
 /.vm/
 /.build/
+# Written by doc/site/build and published by the Docs workflow.
+/docs/*.html
+/docs/.nojekyll
+/docs/assets/search-index.js
+/docs/assets/icon.svg
