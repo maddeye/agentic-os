@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Generates the documentation site in docs/ from the Markdown in doc/.
 
-Usage: doc/site/build [--check]
+Usage: doc/site/build
 
-GitHub Pages serves docs/ from the branch, so the output is committed. The
-theme lives in docs/assets and is edited there. --check writes nothing and
-exits 1 when docs/ differs from what the Markdown would produce.
+The Docs workflow runs this on every push to main that touches the docs and
+publishes docs/ to GitHub Pages, so the output is not committed. The theme
+lives in docs/assets and is edited there.
 
 The converter covers the Markdown the docs use: headings, paragraphs, flat
 lists, task lists, tables, block quotes, fenced code, links, bold, and inline
@@ -308,24 +308,16 @@ def build():
 
 
 def main():
-    check = sys.argv[1:] == ["--check"]
-    if sys.argv[1:] and not check:
+    if sys.argv[1:]:
         sys.exit(__doc__.strip())
     files = build()
-    stale = [name for name, text in files.items() if not (OUT / name).is_file() or (OUT / name).read_text() != text]
-    stale += [p.name for p in OUT.glob("*.html") if p.name not in files]
-    if check:
-        if stale:
-            sys.exit("docs/ is out of date, run doc/site/build: " + ", ".join(sorted(stale)))
-        return
     for extra in OUT.glob("*.html"):
         if extra.name not in files:
             extra.unlink()
-    for name in stale:
-        if name in files:
-            (OUT / name).parent.mkdir(parents=True, exist_ok=True)
-            (OUT / name).write_text(files[name])
-    print(f"docs/: {len(files)} files, {len([s for s in stale if s in files])} written")
+    for name, text in files.items():
+        (OUT / name).parent.mkdir(parents=True, exist_ok=True)
+        (OUT / name).write_text(text)
+    print(f"docs/: {len(files)} files")
 
 
 if __name__ == "__main__":
