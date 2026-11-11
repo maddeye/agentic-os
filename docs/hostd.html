@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Host-maintenance broker · Agent OS</title>
+<script>try { document.documentElement.dataset.theme = localStorage.getItem("aos-theme") || "dark"; } catch (e) {}</script>
+<link rel="icon" href="assets/icon.svg">
+<link rel="preload" href="assets/fonts/source-sans-3.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top">
+<button class="menu" type="button" aria-label="Show navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+<a class="brand" href="index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="2" width="20" height="20"/><rect x="8" y="8" width="8" height="8" fill="currentColor" stroke="none"/></svg><span>Agent OS</span><em>docs</em></a>
+<div class="search"><input type="search" placeholder="Search documentation" aria-label="Search documentation" autocomplete="off"><kbd>/</kbd><ul class="results"></ul></div>
+<nav class="links"><a href="https://github.com/maddeye/agentic-os" rel="noopener">GitHub</a><button class="theme" type="button" aria-label="Switch between dark and light"><svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg><svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg></button></nav>
+</header>
+<div class="shell">
+<nav class="side" aria-label="Documentation">
+<h4>Concepts</h4><ul>
+<li><a href="architecture.html">Architecture</a></li>
+<li><a href="threat-model.html">Threat model</a></li>
+</ul><h4>Design</h4><ul>
+<li><a href="isolation.html">Isolation</a></li>
+<li><a class="here" aria-current="page" href="hostd.html">hostd</a></li>
+<li><a href="storage.html">Storage</a></li>
+<li><a href="gui.html">GUI</a></li>
+</ul><h4>Operate</h4><ul>
+<li><a href="cli.html">CLI</a></li>
+<li><a href="administration.html">Administration</a></li>
+</ul><h4>Verify</h4><ul>
+<li><a href="test-plan.html">Test plan</a></li>
+<li><a href="baseline.html">Baseline</a></li></ul>
+</nav>
+<main>
+<p class="crumb">Design <i>/</i> hostd</p>
+<h1 id="host-maintenance-broker">Host-maintenance broker</h1>
+<p>Status: implemented by <code>agentos-hostd</code>. The <a href="test-plan.html">test procedure</a> covers this contract on Debian 13.7.</p>
+<p><code>hostd</code> lets a non-root system agent change the host through typed, policy-checked, audited operations. It has no way to run an arbitrary command.</p>
+<h2 id="identities">Identities<a class="anchor" href="#identities" aria-label="Link to this section">#</a></h2>
+<div class="table"><table><tr><th>Caller</th><th>How <code>hostd</code> identifies it</th><th>Allowed requests</th></tr><tr><td>Administrator</td><td>Peer UID 0</td><td>All</td></tr><tr><td>System agent</td><td>Peer UID of the <code>agentos-system</code> account</td><td>All except <code>change_approve</code> and <code>change_reject</code></td></tr><tr><td>Any other UID</td><td>No match</td><td>None. The attempt is audited.</td></tr></table></div>
+<p><code>hostd</code> reads the peer UID with <code>SO_PEERCRED</code>, which the kernel records at connect time. No request field can state an identity, and any unknown field makes the request malformed.</p>
+<p>The system agent uses <code>/run/agentos/hostd.sock</code>, <code>root:agentos-system</code>, mode <code>0660</code>, limited to 16 connections. The administrator uses <code>/run/agentos/hostd-admin.sock</code>, <code>root:root</code>, mode <code>0600</code>, limited to 4 connections, so the system agent cannot fill it. <code>agentos system</code> chooses the socket by its effective UID. Project sandboxes mount an empty <code>/run</code>, so a project sees neither.</p>
+<p>The <code>agentos-system</code> account has a home at <code>/var/lib/agent-os/system-agent</code>, no sudo rights, and no group shared with any project. Start a harness under it with <code>sudo -iu agentos-system</code>.</p>
+<h2 id="service-model">Service model<a class="anchor" href="#service-model" aria-label="Link to this section">#</a></h2>
+<p>systemd listens on the socket and starts one <code>agentos-hostd@.service</code> instance per connection, so no broker process exists while idle. Each instance serves one request and exits. A client that disconnects does not cancel a change.</p>
+<p>Mutating requests take an exclusive <code>flock</code>. The kernel releases it when the holder dies, so a change found in <code>applying</code> while the lock is held has no live owner. A request that cannot get the lock in 5 seconds is refused as <code>busy</code>. Run it again later.</p>
+<h2 id="requests">Requests<a class="anchor" href="#requests" aria-label="Link to this section">#</a></h2>
+<p>Send one JSON object and one newline, up to 64 KiB. The whole request must arrive within 10 seconds. The reply is one JSON object with <code>status</code> set to <code>ok</code> or <code>refused</code>.</p>
+<div class="table"><table><tr><th><code>request</code></th><th>Fields</th><th>Effect</th></tr><tr><td><code>system_status</code></td><td>None</td><td>Reports dpkg consistency, changes by state, toolchains, and whether a reboot is pending.</td></tr><tr><td><code>change_history</code></td><td>None</td><td>Returns the last 200 audit events.</td></tr><tr><td><code>change_show</code></td><td><code>id</code></td><td>Returns one change.</td></tr><tr><td><code>change_plan</code></td><td><code>reason</code>, <code>operation</code></td><td>Computes impact, evaluates policy, and records the change.</td></tr><tr><td><code>change_approve</code>, <code>change_reject</code></td><td><code>id</code></td><td>Records the administrator's decision.</td></tr><tr><td><code>change_apply</code></td><td><code>id</code></td><td>Applies an approved change and verifies it.</td></tr><tr><td><code>recover</code></td><td>None</td><td>Finishes any interrupted change. Every mutating request also does this first.</td></tr></table></div>
+<div class="table"><table><tr><th><code>operation.type</code></th><th>Fields</th></tr><tr><td><code>package_install</code></td><td><code>names</code>, up to 32</td></tr><tr><td><code>package_remove</code></td><td><code>names</code>, up to 32</td></tr><tr><td><code>package_upgrade</code></td><td>None</td></tr><tr><td><code>toolchain_install_global</code></td><td><code>name</code>, <code>version</code></td></tr><tr><td><code>toolchain_remove_global</code></td><td><code>name</code>, <code>version</code></td></tr></table></div>
+<p><code>ServiceEnableDisable</code>, <code>UpgradePlan</code>, and recovery-point operations do not exist yet.</p>
+<h2 id="change-states">Change states<a class="anchor" href="#change-states" aria-label="Link to this section">#</a></h2>
+<figure class="code"><figcaption><span>text</span><button type="button">Copy</button></figcaption><pre><code>                +--&gt; awaiting_approval --approve--&gt; approved --apply--&gt; applying --&gt; applied | failed
+change_plan ----+                          |            |
+                +--&gt; approved (policy)     reject       plan changed
+                                           v            v
+                                        rejected      stale</code></pre></figure>
+<p>A plan runs <code>apt-get update</code>, simulates the transaction, and downloads the packages. It copies each archive into <code>metadata/hostd/artifacts/ID</code>, then hashes and lists that copy without running its scripts. It records each package action, each archive's SHA-256 and architecture, the download size, autostart files, and setuid files.</p>
+<p>Approval covers the exact archives. <code>change_apply</code> hashes the copies and simulates again with them. A changed file or a different transaction moves the change to <code>stale</code>. Request a new plan in that case. The install uses only those copies and downloads nothing, so a repository that republishes a version cannot change what was approved. The copies are deleted when the change ends.</p>
+<p>For a toolchain, approval covers the whole catalog entry, including its URL, digest, and check.</p>
+<p>A change is <code>applied</code> only if the command succeeded and every planned action reached its planned version. An upgrade also needs <code>ssh.service</code> and <code>agentos-firewall.service</code> active afterward.</p>
+<p>An upgrade moves every installed package to its candidate and installs any new package that needs, such as a new kernel. It never removes a package. A package that apt will not move, usually because of a conflict, appears in <code>impact.kept_back</code> and in the decision's reasons. Approval still covers the exact archives, so a version published after approval does not change what applies.</p>
+<p><code>reboot_required</code> in <code>system_status</code> is true when a newer kernel file than the running kernel is in <code>/boot</code>. <code>hostd</code> never reboots the host.</p>
+<h2 id="policy">Policy<a class="anchor" href="#policy" aria-label="Link to this section">#</a></h2>
+<p>The administrator owns <code>/etc/agent-os/hostd-policy.json</code>. The package copies the default only when the file is absent, so an upgrade preserves it. A missing or malformed policy refuses every plan.</p>
+<div class="table"><table><tr><th>Field</th><th>Meaning</th></tr><tr><td><code>automatic_packages</code></td><td>Package names that may install without approval. Empty by default.</td></tr><tr><td><code>automatic_toolchains</code></td><td><code>name/version</code> entries that may install without approval. Empty by default.</td></tr><tr><td><code>protected_package_prefixes</code></td><td>Package name prefixes that always need approval.</td></tr></table></div>
+<p>A package install is automatic only when all of these are true:</p>
+<ul><li>Every requested name is on <code>automatic_packages</code>.</li><li>The transaction changes or removes no installed package.</li><li>No package in the transaction matches a protected prefix.</li><li>No package ships a setuid file, or any file in a systemd unit or generator directory or <code>/etc/init.d</code>.</li></ul>
+<p>Upgrades and removals always need approval. Removing an essential package is refused outright. Installs pass <code>--no-remove</code>, so an install can never remove a package.</p>
+<h2 id="package-names">Package names<a class="anchor" href="#package-names" aria-label="Link to this section">#</a></h2>
+<p>The default <code>protected_package_prefixes</code> includes <code>agentos</code>, so a plan that changes the broker's own package always names it as protected. An approved removal still fails while any project exists, because the package's <code>prerm</code> script refuses it.</p>
+<p>A name must match Debian's characters, without <code>*</code>, <code>/</code>, <code>:</code>, or <code>=</code>. <code>.</code> and <code>+</code> are legal in Debian names and are also regex syntax for apt, and apt reads a <code>name-</code> suffix as a removal. A plan therefore stands only if apt acted on exactly the requested names. Anything else is refused as <code>unknown_package</code>.</p>
+<p>Packages come only from the APT sources already on the host. No operation adds a source.</p>
+<h2 id="toolchains">Toolchains<a class="anchor" href="#toolchains" aria-label="Link to this section">#</a></h2>
+<p>Only entries in <code>/usr/share/agent-os/toolchains.json</code> can be installed. Each entry pins a URL, a SHA-256 digest, and a check command with its expected output.</p>
+<p>An install runs these steps under <code>/opt/agent-os/toolchains/.staging</code>:</p>
+<ol><li>Download over HTTPS and compare the digest.</li><li>Extract without preserving owners or modes.</li><li>Give all files to root, remove group and other write, and clear setuid and setgid bits.</li><li>Run the check as <code>nobody</code> with no new privileges.</li><li>Sync the filesystem, so the files are on disk before they can be published.</li><li>Rename the tree to <code>/opt/agent-os/toolchains/NAME/VERSION</code>.</li></ol>
+<p>The rename is the only publication step, so projects see all of a version or none of it. Each project selects versions independently with <code>agentos project toolchain</code>. A project with no selection gets no toolchain on <code>PATH</code>.</p>
+<h2 id="audit">Audit<a class="anchor" href="#audit" aria-label="Link to this section">#</a></h2>
+<p><code>/var/lib/agent-os/metadata/hostd/audit.jsonl</code> is mode <code>0600</code>. Each line records the time, the event, and the caller's UID, PID, and name. Events also carry the change, action, decision, result, verification, and undo command where they apply.</p>
+<p>Each event is written and synced before the step it describes or the step that follows it. Planning and repair run privileged tools, so <code>planning</code> and <code>recovery_started</code> come first. If a write fails, the request stops, so no privileged step runs without its record. Malformed requests are recorded without their body, because a body can hold anything a caller sent.</p>
+<div class="table"><table><tr><th>Event</th><th>Written when</th></tr><tr><td><code>denied</code></td><td>A caller lacks the role for a request.</td></tr><tr><td><code>malformed_request</code></td><td>A request cannot be parsed.</td></tr><tr><td><code>plan_refused</code></td><td>Validation or apt rejects a plan.</td></tr><tr><td><code>planning</code></td><td>A plan is about to run apt.</td></tr><tr><td><code>planned</code></td><td>A change is recorded, with its decision and impact.</td></tr><tr><td><code>approved</code>, <code>rejected</code></td><td>The administrator decides.</td></tr><tr><td><code>apply_refused</code>, <code>stale</code></td><td>A change cannot apply.</td></tr><tr><td><code>applying</code></td><td>A change is about to run.</td></tr><tr><td><code>finished</code></td><td>A change ends, with its verification and undo command.</td></tr><tr><td><code>recovery_started</code></td><td>A repair is about to run.</td></tr><tr><td><code>recovery</code></td><td>A repair has run, with its result.</td></tr></table></div>
+<h2 id="recovery">Recovery<a class="anchor" href="#recovery" aria-label="Link to this section">#</a></h2>
+<p>A change left in <code>applying</code> was interrupted by a crash, a kill, or power loss. The next mutating request repairs it before doing anything else. <code>agentos system recover</code> asks for this directly.</p>
+<div class="table"><table><tr><th>Change</th><th>Repair</th><th>Result</th></tr><tr><td>Package</td><td><code>dpkg --configure -a</code>, then <code>apt-get -f --no-remove --no-download install</code> if it touches only approved packages</td><td><code>applied</code> if verification passes, otherwise <code>failed</code></td></tr><tr><td>Toolchain</td><td>Removes the staging files</td><td><code>applied</code> if the rename happened, otherwise <code>failed</code></td></tr></table></div>
+<p>Recovery rolls forward. It does not undo a change that had already finished unpacking. Each outcome records the command that would undo the change.</p>
+<p>An outcome of <code>failed</code> with <code>dpkg_consistent</code> false in <code>status</code> needs an administrator.</p>
+<nav class="pager"><a class="prev" href="isolation.html"><small>Previous</small>Isolation</a><a class="next" href="storage.html"><small>Next</small>Storage</a></nav>
+<p class="source">Generated from <a href="https://github.com/maddeye/agentic-os/blob/main/doc/HOSTD.md" rel="noopener">doc/HOSTD.md</a>.</p>
+</main>
+<aside class="toc"><h4>On this page</h4><ul><li><a href="#identities">Identities</a></li><li><a href="#service-model">Service model</a></li><li><a href="#requests">Requests</a></li><li><a href="#change-states">Change states</a></li><li><a href="#policy">Policy</a></li><li><a href="#package-names">Package names</a></li><li><a href="#toolchains">Toolchains</a></li><li><a href="#audit">Audit</a></li><li><a href="#recovery">Recovery</a></li></ul></aside>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
