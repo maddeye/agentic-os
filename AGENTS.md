@@ -142,6 +142,7 @@ Keep them true in the same change:
 - An architectural change adds a row to the decision log in section 15 of the architecture document, and a finished roadmap item gets its checkbox.
 - Gap numbers in the threat model are permanent, because PRs cite them. Give a new gap the next unused number.
 - `tests/vm/baseline` generates `doc/BASELINE.md`, so regenerate it to change it.
+- `doc/site/build` generates the site in `docs/` from `doc/*.md`, and GitHub Pages serves that directory. Run it after every edit under `doc/` and commit the result. `doc/site/build --check` exits 1 while `docs/` is stale. Edit the Markdown for content and `docs/assets` for the theme. A new page needs a row in `PAGES` in that script.
 - Record measurements only from runs you made, with the conditions that produced them.
 
 ## Commits and pull requests

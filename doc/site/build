@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Generates the documentation site in docs/ from the Markdown in doc/.
+
+Usage: doc/site/build [--check]
+
+GitHub Pages serves docs/ from the branch, so the output is committed. The
+theme lives in docs/assets and is edited there. --check writes nothing and
+exits 1 when docs/ differs from what the Markdown would produce.
+
+The converter covers the Markdown the docs use: headings, paragraphs, flat
+lists, task lists, tables, block quotes, fenced code, links, bold, and inline
+code. It refuses nested lists instead of rendering them wrong.
+"""
+
+import html
+import json
+import pathlib
+import re
+import sys
+
+REPO = pathlib.Path(__file__).resolve().parents[2]
+DOC = REPO / "doc"
+OUT = REPO / "docs"
+GITHUB = "https://github.com/maddeye/agentic-os"
+
+# Group, source file, output name, navigation label, summary for the home page.
+PAGES = [
+    ("Concepts", "ARCHITECTURE.md", "architecture", "Architecture", "Intent, not inventory: requirements, proposals, the roadmap, and open questions."),
+    ("Concepts", "THREAT_MODEL.md", "threat-model", "Threat model", "Assets, attackers, boundaries, and accepted gaps."),
+    ("Design", "ISOLATION.md", "isolation", "Isolation", "Identities, directory layout, networking, and each sandbox setting."),
+    ("Design", "HOSTD.md", "hostd", "hostd", "The broker's protocol, change states, policy, audit, and recovery."),
+    ("Design", "STORAGE.md", "storage", "Storage", "Subvolumes, snapshots, quotas, and backups."),
+    ("Design", "GUI.md", "gui", "GUI", "Graphical sessions, capture, and remote viewing."),
+    ("Operate", "CLI.md", "cli", "CLI", "The agentos commands."),
+    ("Operate", "ADMINISTRATION.md", "administration", "Administration", "Installing and maintaining a host."),
+    ("Verify", "TEST_PLAN.md", "test-plan", "Test plan", "VM commands and what each suite proves."),
+    ("Verify", "BASELINE.md", "baseline", "Baseline", "Measured capabilities and benchmarks of the unmodified test VM."),
+]
+SLUG_OF = {source: slug for _, source, slug, _, _ in PAGES}
+
+MARK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="2" width="20" height="20"/><rect x="8" y="8" width="8" height="8" fill="currentColor" stroke="none"/></svg>'
+ICON_MENU = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>'
+ICON_SUN = '<svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>'
+ICON_MOON = '<svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'
+
+
+def slugify(text, seen):
+    """GitHub's heading anchor, so links written for GitHub keep working."""
+    slug = re.sub(r"[^\w\- ]", "", text.lower()).replace(" ", "-")
+    count = seen.get(slug, 0)
+    seen[slug] = count + 1
+    return slug if count == 0 else f"{slug}-{count}"
+
+
+def plain(markdown):
+    """Inline Markdown as plain text, for anchors, the outline, and search."""
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", markdown)
+    return re.sub(r"[`*]", "", text).replace("\\|", "|")
+
+
+def rewrite(href):
+    if re.match(r"(https?:|mailto:|#)", href):
+        return href
+    path, _, fragment = href.partition("#")
+    name = pathlib.PurePosixPath(path).name
+    if "/" not in path and name in SLUG_OF:
+        return SLUG_OF[name] + ".html" + ("#" + fragment if fragment else "")
+    # Everything else points into the repository, relative to doc/.
+    parts = []
+    for part in ("doc/" + path).split("/"):
+        if part == "..":
+            parts.pop()
+        elif part not in ("", "."):
+            parts.append(part)
+    kind = "tree" if (REPO / "/".join(parts)).is_dir() else "blob"
+    return f"{GITHUB}/{kind}/main/" + "/".join(parts) + ("#" + fragment if fragment else "")
+
+
+def inline(text):
+    spans = []
+
+    def stash(match):
+        spans.append("<code>" + html.escape(match.group(2).replace("\\|", "|"), quote=False) + "</code>")
+        return f"\0{len(spans) - 1}\0"
+
+    text = re.sub(r"(`+)(.+?)\1", stash, text)
+    text = html.escape(text.replace("\\|", "|"), quote=False)
+
+    def link(match):
+        href = rewrite(match.group(2))
+        outside = ' rel="noopener"' if href.startswith("http") else ""
+        return f'<a href="{html.escape(href)}"{outside}>{match.group(1)}</a>'
+
+    text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link, text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    return re.sub(r"\0(\d+)\0", lambda m: spans[int(m.group(1))], text)
+
+
+def cells(row):
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", row.strip().strip("|"))]
+
+
+LIST_ITEM = re.compile(r"([-*]|\d+\.) (.*)")
+DONE = ' class="done"'
+BLOCK_START = re.compile(r"(#{1,6} |```|\||>|[-*] |\d+\. |(---+|\*\*\*+)$)")
+
+
+def convert(lines, where, seen, outline, sections):
+    """Returns HTML for a list of Markdown lines.
+
+    outline collects (level, id, text) for headings. sections collects
+    [anchor, heading, text] for the search index.
+    """
+    out = []
+    i = 0
+
+    def note(text):
+        if sections is not None:
+            sections[-1][2] += " " + plain(text)
+
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        if re.match(r"\s+([-*]|\d+\.) ", line):
+            sys.exit(f"{where}: nested list is not supported: {line.strip()[:60]}")
+
+        if line.startswith("```"):
+            lang = line[3:].strip()
+            body = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith("```"):
+                body.append(lines[i])
+                i += 1
+            i += 1
+            code = html.escape("\n".join(body), quote=False)
+            out.append(f'<figure class="code"><figcaption><span>{html.escape(lang or "text")}</span><button type="button">Copy</button></figcaption><pre><code>{code}</code></pre></figure>')
+            note(" ".join(body))
+            continue
+
+        heading = re.match(r"(#{1,6}) (.*)", line)
+        if heading:
+            level, text = len(heading.group(1)), heading.group(2).strip()
+            anchor = slugify(plain(text), seen)
+            outline.append((level, anchor, plain(text)))
+            if sections is not None:
+                sections.append([anchor, plain(text), ""])
+            link = f'<a class="anchor" href="#{anchor}" aria-label="Link to this section">#</a>' if level in (2, 3) else ""
+            out.append(f'<h{level} id="{anchor}">{inline(text)}{link}</h{level}>')
+            i += 1
+            continue
+
+        if re.match(r"(---+|\*\*\*+)$", line):
+            i += 1
+            continue
+
+        if line.startswith("|") and i + 1 < len(lines) and re.match(r"\|[\s:|-]+\|?$", lines[i + 1]):
+            head = cells(line)
+            i += 2
+            rows = []
+            while i < len(lines) and lines[i].startswith("|"):
+                rows.append(cells(lines[i]))
+                i += 1
+            table = "<tr>" + "".join(f"<th>{inline(c)}</th>" for c in head) + "</tr>"
+            for row in rows:
+                table += "<tr>" + "".join(f"<td>{inline(c)}</td>" for c in row) + "</tr>"
+                note(" ".join(row))
+            out.append(f'<div class="table"><table>{table}</table></div>')
+            continue
+
+        if line.startswith(">"):
+            quoted = []
+            while i < len(lines) and lines[i].startswith(">"):
+                quoted.append(re.sub(r"^> ?", "", lines[i]))
+                i += 1
+            out.append('<div class="callout">' + convert(quoted, where, seen, outline, sections) + "</div>")
+            continue
+
+        item = LIST_ITEM.match(line)
+        if item:
+            ordered = item.group(1)[0].isdigit()
+            items = []
+            while i < len(lines):
+                item = LIST_ITEM.match(lines[i])
+                if item and item.group(1)[0].isdigit() == ordered:
+                    items.append(item.group(2))
+                elif lines[i].strip() and not BLOCK_START.match(lines[i]) and not lines[i].startswith(" "):
+                    items[-1] += " " + lines[i].strip()
+                else:
+                    break
+                i += 1
+            note(" ".join(items))
+            if ordered:
+                first = int(LIST_ITEM.match(line).group(1)[:-1])
+                start = f' start="{first}"' if first != 1 else ""
+                out.append(f"<ol{start}>" + "".join(f"<li>{inline(t)}</li>" for t in items) + "</ol>")
+            elif all(re.match(r"\[[ xX]\] ", t) for t in items):
+                done = {" ": ""}
+                rows = "".join(f'<li{done.get(t[1], DONE)}>{inline(t[4:])}</li>' for t in items)
+                out.append(f'<ul class="tasks">{rows}</ul>')
+            else:
+                out.append("<ul>" + "".join(f"<li>{inline(t)}</li>" for t in items) + "</ul>")
+            continue
+
+        paragraph = []
+        while i < len(lines) and lines[i].strip() and not BLOCK_START.match(lines[i]):
+            paragraph.append(lines[i])
+            i += 1
+        note(" ".join(paragraph))
+        # Two trailing spaces are a hard line break.
+        text = "".join(inline(p.rstrip()) + ("<br>" if p.endswith("  ") else " ") for p in paragraph)
+        out.append(f"<p>{text.strip().removesuffix('<br>')}</p>")
+
+    return "\n".join(out)
+
+
+def sidebar(current):
+    out, group = [], None
+    for g, _, slug, label, _ in PAGES:
+        if g != group:
+            out.append(("</ul>" if group else "") + f"<h4>{g}</h4><ul>")
+            group = g
+        here = ' class="here" aria-current="page"' if slug == current else ""
+        out.append(f'<li><a{here} href="{slug}.html">{html.escape(label)}</a></li>')
+    return "\n".join(out) + "</ul>"
+
+
+def page(title, crumb, current, body, outline, footer):
+    toc = ""
+    entries = [(anchor, text) for level, anchor, text in outline if level == 2]
+    if entries:
+        toc = "<h4>On this page</h4><ul>" + "".join(f'<li><a href="#{a}">{html.escape(t)}</a></li>' for a, t in entries) + "</ul>"
+    return f"""<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)} · Agent OS</title>
+<script>try {{ document.documentElement.dataset.theme = localStorage.getItem("aos-theme") || "dark"; }} catch (e) {{}}</script>
+<link rel="icon" href="assets/icon.svg">
+<link rel="preload" href="assets/fonts/source-sans-3.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top">
+<button class="menu" type="button" aria-label="Show navigation">{ICON_MENU}</button>
+<a class="brand" href="index.html">{MARK}<span>Agent OS</span><em>docs</em></a>
+<div class="search"><input type="search" placeholder="Search documentation" aria-label="Search documentation" autocomplete="off"><kbd>/</kbd><ul class="results"></ul></div>
+<nav class="links"><a href="{GITHUB}" rel="noopener">GitHub</a><button class="theme" type="button" aria-label="Switch between dark and light">{ICON_SUN}{ICON_MOON}</button></nav>
+</header>
+<div class="shell">
+<nav class="side" aria-label="Documentation">
+{sidebar(current)}
+</nav>
+<main>
+{crumb}
+{body}
+{footer}
+</main>
+<aside class="toc">{toc}</aside>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
+"""
+
+
+def build():
+    files = {}
+    search = []
+
+    for number, (group, source, slug, label, _) in enumerate(PAGES):
+        lines = (DOC / source).read_text().splitlines()
+        outline, sections = [], [["", label, ""]]
+        body = convert(lines, f"doc/{source}", {}, outline, sections)
+        title = next((text for level, _, text in outline if level == 1), label)
+        crumb = f'<p class="crumb">{group} <i>/</i> {html.escape(label)}</p>'
+        pager = ""
+        if number > 0:
+            pager += f'<a class="prev" href="{PAGES[number - 1][2]}.html"><small>Previous</small>{html.escape(PAGES[number - 1][3])}</a>'
+        if number + 1 < len(PAGES):
+            pager += f'<a class="next" href="{PAGES[number + 1][2]}.html"><small>Next</small>{html.escape(PAGES[number + 1][3])}</a>'
+        footer = f'<nav class="pager">{pager}</nav>\n<p class="source">Generated from <a href="{GITHUB}/blob/main/doc/{source}" rel="noopener">doc/{source}</a>.</p>'
+        files[f"{slug}.html"] = page(title, crumb, slug, body, outline, footer)
+        for anchor, heading, text in sections:
+            if text.strip() or anchor:
+                search.append({"u": slug + ".html" + ("#" + anchor if anchor else ""), "p": label, "h": heading, "x": " ".join(text.split())})
+
+    outline = []
+    body = convert((DOC / "site/index.md").read_text().splitlines(), "doc/site/index.md", {}, outline, None)
+    group = None
+    for g, _, slug, label, summary in PAGES:
+        if g != group:
+            body += ("</ul>" if group else "") + f'\n<h2 id="{g.lower()}">{g}</h2>\n<ul class="index">'
+            outline.append((2, g.lower(), g))
+            group = g
+        body += f'\n<li><a href="{slug}.html"><b>{html.escape(label)}</b><span>{html.escape(summary)}</span></a></li>'
+    body += "</ul>"
+    files["index.html"] = page("Documentation", "", None, body, outline, "")
+
+    files["assets/search-index.js"] = "window.AOS_SEARCH = " + json.dumps(search, ensure_ascii=False, separators=(",", ":")) + ";\n"
+    files["assets/icon.svg"] = (REPO / "assets/icon.svg").read_text()
+    # Without this file GitHub Pages runs Jekyll over the directory.
+    files[".nojekyll"] = ""
+    return files
+
+
+def main():
+    check = sys.argv[1:] == ["--check"]
+    if sys.argv[1:] and not check:
+        sys.exit(__doc__.strip())
+    files = build()
+    stale = [name for name, text in files.items() if not (OUT / name).is_file() or (OUT / name).read_text() != text]
+    stale += [p.name for p in OUT.glob("*.html") if p.name not in files]
+    if check:
+        if stale:
+            sys.exit("docs/ is out of date, run doc/site/build: " + ", ".join(sorted(stale)))
+        return
+    for extra in OUT.glob("*.html"):
+        if extra.name not in files:
+            extra.unlink()
+    for name in stale:
+        if name in files:
+            (OUT / name).parent.mkdir(parents=True, exist_ok=True)
+            (OUT / name).write_text(files[name])
+    print(f"docs/: {len(files)} files, {len([s for s in stale if s in files])} written")
+
+
+if __name__ == "__main__":
+    main()

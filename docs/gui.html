@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graphical sessions · Agent OS</title>
+<script>try { document.documentElement.dataset.theme = localStorage.getItem("aos-theme") || "dark"; } catch (e) {}</script>
+<link rel="icon" href="assets/icon.svg">
+<link rel="preload" href="assets/fonts/source-sans-3.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top">
+<button class="menu" type="button" aria-label="Show navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+<a class="brand" href="index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="2" width="20" height="20"/><rect x="8" y="8" width="8" height="8" fill="currentColor" stroke="none"/></svg><span>Agent OS</span><em>docs</em></a>
+<div class="search"><input type="search" placeholder="Search documentation" aria-label="Search documentation" autocomplete="off"><kbd>/</kbd><ul class="results"></ul></div>
+<nav class="links"><a href="https://github.com/maddeye/agentic-os" rel="noopener">GitHub</a><button class="theme" type="button" aria-label="Switch between dark and light"><svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg><svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg></button></nav>
+</header>
+<div class="shell">
+<nav class="side" aria-label="Documentation">
+<h4>Concepts</h4><ul>
+<li><a href="architecture.html">Architecture</a></li>
+<li><a href="threat-model.html">Threat model</a></li>
+</ul><h4>Design</h4><ul>
+<li><a href="isolation.html">Isolation</a></li>
+<li><a href="hostd.html">hostd</a></li>
+<li><a href="storage.html">Storage</a></li>
+<li><a class="here" aria-current="page" href="gui.html">GUI</a></li>
+</ul><h4>Operate</h4><ul>
+<li><a href="cli.html">CLI</a></li>
+<li><a href="administration.html">Administration</a></li>
+</ul><h4>Verify</h4><ul>
+<li><a href="test-plan.html">Test plan</a></li>
+<li><a href="baseline.html">Baseline</a></li></ul>
+</nav>
+<main>
+<p class="crumb">Design <i>/</i> GUI</p>
+<h1 id="graphical-sessions">Graphical sessions</h1>
+<p>Status: implemented for Phase 4. <code>tests/gui/run</code> passes on Debian 13.7 with kernel 6.12, Sway 1.10.1, and software rendering.</p>
+<p>A project agent can open an off-screen Wayland desktop, run a real application in it, drive that application with a mouse and keyboard, and keep screenshots and video. Nothing graphical runs while no session exists.</p>
+<h2 id="install-the-packages">Install the packages<a class="anchor" href="#install-the-packages" aria-label="Link to this section">#</a></h2>
+<p>The GUI tools are ordinary host packages, so they go through the <a href="hostd.html"><code>hostd</code></a> approval path:</p>
+<figure class="code"><figcaption><span>bash</span><button type="button">Copy</button></figcaption><pre><code>mapfile -t packages &lt; /usr/share/agent-os/gui-packages
+agentos system package install "${packages[@]}" --reason "graphical sessions"
+agentos system change approve ID
+agentos system change apply ID</code></pre></figure>
+<h2 id="commands">Commands<a class="anchor" href="#commands" aria-label="Link to this section">#</a></h2>
+<p>A project agent runs <code>agentos-gui</code> directly, from inside its sandbox. An administrator runs the same subcommands as <code>agentos project gui NAME SUBCOMMAND ...</code>.</p>
+<div class="table"><table><tr><th>Command</th><th>Result</th></tr><tr><td><code>start ID [--size WxH]</code></td><td>Starts a session and returns when it is ready. The default size is <code>1280x720</code>.</td></tr><tr><td><code>run ID -- COMMAND [ARG...]</code></td><td>Starts an application in the session and prints its number. It uses the caller's directory and environment.</td></tr><tr><td><code>wait ID --ready</code></td><td>Waits for the session to be ready.</td></tr><tr><td><code>wait ID --window APP_ID</code></td><td>Waits for a window. <code>windows</code> prints each window's <code>app_id</code>.</td></tr><tr><td><code>wait ID --app NUMBER</code></td><td>Waits for an application to exit and returns its exit status.</td></tr><tr><td><code>windows ID</code></td><td>Prints one JSON object per window.</td></tr><tr><td><code>type ID TEXT</code></td><td>Types printable ASCII, newlines, and tabs. Other text is refused.</td></tr><tr><td><code>key ID KEY</code></td><td>Presses a key or combination, such as <code>Return</code> or <code>Control+a</code>.</td></tr><tr><td><code>move ID X Y</code></td><td>Moves the pointer.</td></tr><tr><td><code>click ID X Y [--button left|middle|right]</code></td><td>Clicks at a position.</td></tr><tr><td><code>screenshot ID [--output FILE]</code></td><td>Captures the screen and prints the path.</td></tr><tr><td><code>record start ID</code>, <code>record stop ID</code></td><td>Records the screen. A session keeps one recording.</td></tr><tr><td><code>result ID pass|fail [--detail TEXT]</code></td><td>Stores a test result in the metadata.</td></tr><tr><td><code>status ID</code></td><td>Prints the metadata.</td></tr><tr><td><code>view ID</code></td><td>Connects standard input and output to the session's RFB viewer.</td></tr><tr><td><code>list</code></td><td>Prints each session's ID, state, size, and start time.</td></tr><tr><td><code>stop ID</code></td><td>Stops the session and prints its final state.</td></tr><tr><td><code>rm ID</code></td><td>Deletes a stopped session's artifacts.</td></tr></table></div>
+<p><code>ID</code> matches <code>^[a-z0-9][a-z0-9_-]{0,31}$</code>. An ID stays taken until <code>rm</code> removes it, so a new run cannot overwrite an earlier run's captures.</p>
+<p>The <code>agentos-gui</code> exit status is 0 on success, 1 on refusal, and 2 on invalid usage. <code>wait --app</code> returns the application's status instead.</p>
+<h2 id="session-lifetime">Session lifetime<a class="anchor" href="#session-lifetime" aria-label="Link to this section">#</a></h2>
+<p>A session started with <code>agentos project gui NAME start</code> has its own systemd unit, and lasts until <code>stop</code>, <code>agentos project stop</code>, or a reboot.</p>
+<p>A session started with <code>agentos-gui start</code> belongs to the command that started it, and ends with that command. Running <code>agentos project run NAME -- agentos-gui start ID</code> on its own therefore starts a session that ends at once. Use the <code>agentos project gui</code> form from outside a project.</p>
+<div class="table"><table><tr><th>Event</th><th>Result</th></tr><tr><td><code>stop</code></td><td>Finishes any recording, stops applications, and records <code>stopped</code>.</td></tr><tr><td><code>agentos project stop</code> or the starting command exits</td><td>The same.</td></tr><tr><td>Supervisor killed, or host reboot</td><td>The compositor dies with its supervisor. The next <code>list</code> or <code>start</code> records <code>orphaned</code> and clears the runtime directory.</td></tr><tr><td><code>agentos project restore</code> or <code>delete</code></td><td>Stops the session with the project's other commands.</td></tr></table></div>
+<h2 id="artifacts">Artifacts<a class="anchor" href="#artifacts" aria-label="Link to this section">#</a></h2>
+<figure class="code"><figcaption><span>text</span><button type="button">Copy</button></figcaption><pre><code>artifacts/gui/ID/
+  metadata.json
+  screenshots/0001.png
+  recording.mkv
+  inputs.jsonl
+  logs/</code></pre></figure>
+<p><code>metadata.json</code> records the project, session, backend, resolution, state, timestamps, each application's command and exit status, every capture, the recording's codec, and the test result.</p>
+<p><code>inputs.jsonl</code> keeps the positions of pointer actions and the names of special keys. Typed text can be a secret, so the trace stores only its length, and a printable key in a combination appears as <code>&lt;char&gt;</code>.</p>
+<p>The artifacts are part of the project's snapshots and backups. <code>rm</code> removes them from the live tree only.</p>
+<h2 id="view-a-session-remotely">View a session remotely<a class="anchor" href="#view-a-session-remotely" aria-label="Link to this section">#</a></h2>
+<p><code>view</code> carries RFB over standard input and output, so OpenSSH authenticates the viewer and no port opens on the host. This command gives a local VNC client a port on <code>127.0.0.1:5900</code>:</p>
+<figure class="code"><figcaption><span>bash</span><button type="button">Copy</button></figcaption><pre><code>socat TCP-LISTEN:5900,bind=127.0.0.1,reuseaddr \
+	EXEC:"ssh ADMIN@HOST sudo agentos project gui NAME view ID"</code></pre></figure>
+<p>A viewer can send input to the session.</p>
+<h2 id="design">Design<a class="anchor" href="#design" aria-label="Link to this section">#</a></h2>
+<p>Each session has one supervisor process, which runs as the project. It starts <code>dbus-daemon</code>, <code>sway</code>, and <code>wayvnc</code>, and it holds the session's only control socket. Every command is a request to that socket, so <code>metadata.json</code> has one writer. A session is alive exactly when its control socket answers, which the kernel settles without a PID file.</p>
+<p>Runtime sockets live in <code>/tmp/gui/ID</code>, which is the project's own <code>/tmp</code>, mode <code>0700</code>, and left out of snapshots. Applications run in their own process groups as children of the supervisor.</p>
+<p>Root never opens a project path. <code>agentos project gui</code> only starts <code>agentos-gui</code> as the project, by the same path as <code>agentos project run</code>.</p>
+<p>The supervisor keeps one RFB connection to <code>wayvnc</code> open for the life of the session. Sway's headless seat reports no pointer or keyboard until a virtual device attaches, so a client without one gets no input at all. Tools that create a device per action, such as <code>wtype</code>, also lose the first key while the application loads the new keymap. One long-lived connection removes both problems.</p>
+<p><code>wf-recorder</code> writes the complete file on <code>SIGINT</code>, and then waits for one more compositor frame before it exits. On a static screen that frame never arrives. <code>record stop</code> moves the pointer by one pixel to produce it, and kills the recorder after five seconds if it still has not exited.</p>
+<h2 id="backend-evaluation">Backend evaluation<a class="anchor" href="#backend-evaluation" aria-label="Link to this section">#</a></h2>
+<p>Each candidate ran in a project sandbox on the test VM, with no GPU.</p>
+<div class="table"><table><tr><th>Requirement</th><th>Sway 1.10.1</th><th>waymux 0.2.0-dev (2026-07-04)</th><th>Weston 14.0.2</th></tr><tr><td>Debian package</td><td>Yes</td><td>No</td><td>Yes</td></tr><tr><td>Starts in the sandbox</td><td>Yes</td><td>Yes</td><td>Yes</td></tr><tr><td>Lists a GTK3 window</td><td>Yes</td><td>No, the window list stayed empty</td><td>Not tested</td></tr><tr><td>Screenshot</td><td>Yes, <code>grim</code></td><td>No, it reported no windows</td><td>No, <code>grim</code> needs <code>wlr-screencopy</code></td></tr><tr><td>Video</td><td>Yes, <code>wf-recorder</code></td><td>No, stop wrote no file</td><td>Not tested</td></tr><tr><td>Input</td><td>Yes, with a virtual device</td><td>Not reached</td><td>No, <code>wayvnc</code> needs the virtual pointer protocol</td></tr><tr><td>Viewer without a GPU</td><td>Yes, <code>wayvnc</code></td><td>The default viewer needs a GPU, by its documentation</td><td>No</td></tr></table></div>
+<p>Sway is the backend because every tool comes from the Debian archive and every requirement passed. The cause of waymux's empty window list is unknown. waymux needs Rust 1.88, newer than Debian's compiler, and has no committed <code>Cargo.lock</code> or GitHub release. Its built-in capture and input would remove the viewer connection and the recorder workaround, so reevaluate it once it publishes releases.</p>
+<p>XWayland runs inside each Sway session, and the suite runs a GTK application through it. That covers the Xvfb fallback's purpose, so Xvfb is not used.</p>
+<h2 id="software-rendering-benchmark">Software rendering benchmark<a class="anchor" href="#software-rendering-benchmark" aria-label="Link to this section">#</a></h2>
+<p><code>tests/gui/benchmark</code> printed these values on 2026-11-08, on a 4-vCPU KVM guest with 4 GiB of RAM and <code>WLR_RENDERER=pixman</code>.</p>
+<div class="table"><table><tr><th>Metric</th><th>1280x720</th><th>1920x1080</th></tr><tr><td>Session start</td><td>239 ms</td><td>236 ms</td></tr><tr><td>GTK window after <code>run</code></td><td>175 ms</td><td>177 ms</td></tr><tr><td>Idle CPU, one window</td><td>0% of one core</td><td>0% of one core</td></tr><tr><td>Session memory, RSS</td><td>86 MiB</td><td>100 MiB</td></tr><tr><td>Screenshot</td><td>59 ms</td><td>87 ms</td></tr><tr><td>Recording, 40-pixel moving bar: frames per second</td><td>31</td><td>31</td></tr><tr><td>Recording, 40-pixel moving bar: CPU of one core</td><td>25%</td><td>53%</td></tr><tr><td>Recording, 40-pixel moving bar: KiB per minute</td><td>257</td><td>279</td></tr><tr><td>Recording, every pixel changing: frames per second</td><td>31</td><td>30</td></tr><tr><td>Recording, every pixel changing: CPU of one core</td><td>46%</td><td>100%</td></tr><tr><td>Recording, every pixel changing: KiB per minute</td><td>18042</td><td>40882</td></tr></table></div>
+<p>The test application animates at 30 frames per second, so those rows show that recording kept up at that rate, on an otherwise idle guest. A loaded host or a faster application can drop frames. CPU counts every process in the session, including the application.</p>
+<h2 id="optional-gpu-acceleration">Optional GPU acceleration<a class="anchor" href="#optional-gpu-acceleration" aria-label="Link to this section">#</a></h2>
+<p>This is a requirements list. No part of it has been tested.</p>
+<ul><li>The <code>native-restricted</code> profile sets <code>PrivateDevices=yes</code>, which hides <code>/dev/dri</code>. A GPU session needs a profile that exposes one render node, with <code>DeviceAllow=</code> and access through the <code>render</code> group.</li><li>A shared GPU does not isolate one project's memory from another's the way separate UIDs do. Exposing it adds kernel and driver attack surface, so it needs a threat-model revision before it ships.</li><li>The supervisor sets <code>WLR_RENDERER=pixman</code> and <code>LIBGL_ALWAYS_SOFTWARE=1</code>. A GPU backend must remove both.</li><li><code>wf-recorder</code> encodes with <code>libx264</code> on the CPU. Hardware encoding needs a VA-API driver for the GPU, and a codec that the driver supports.</li></ul>
+<h2 id="limits">Limits<a class="anchor" href="#limits" aria-label="Link to this section">#</a></h2>
+<ul><li><code>type</code> covers the US layout only, because <code>wayvnc</code> maps key symbols through that layout.</li><li><code>run</code> starts applications with no accessibility bus, so accessibility-tree automation is not available.</li><li>Only application mode exists. Desktop and isolated session modes remain optional work.</li><li><a href="threat-model.html">The threat model</a> lists the accepted gaps for captures and viewers.</li></ul>
+<nav class="pager"><a class="prev" href="storage.html"><small>Previous</small>Storage</a><a class="next" href="cli.html"><small>Next</small>CLI</a></nav>
+<p class="source">Generated from <a href="https://github.com/maddeye/agentic-os/blob/main/doc/GUI.md" rel="noopener">doc/GUI.md</a>.</p>
+</main>
+<aside class="toc"><h4>On this page</h4><ul><li><a href="#install-the-packages">Install the packages</a></li><li><a href="#commands">Commands</a></li><li><a href="#session-lifetime">Session lifetime</a></li><li><a href="#artifacts">Artifacts</a></li><li><a href="#view-a-session-remotely">View a session remotely</a></li><li><a href="#design">Design</a></li><li><a href="#backend-evaluation">Backend evaluation</a></li><li><a href="#software-rendering-benchmark">Software rendering benchmark</a></li><li><a href="#optional-gpu-acceleration">Optional GPU acceleration</a></li><li><a href="#limits">Limits</a></li></ul></aside>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

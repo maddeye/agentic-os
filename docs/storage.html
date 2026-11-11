@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage design · Agent OS</title>
+<script>try { document.documentElement.dataset.theme = localStorage.getItem("aos-theme") || "dark"; } catch (e) {}</script>
+<link rel="icon" href="assets/icon.svg">
+<link rel="preload" href="assets/fonts/source-sans-3.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top">
+<button class="menu" type="button" aria-label="Show navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+<a class="brand" href="index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="2" width="20" height="20"/><rect x="8" y="8" width="8" height="8" fill="currentColor" stroke="none"/></svg><span>Agent OS</span><em>docs</em></a>
+<div class="search"><input type="search" placeholder="Search documentation" aria-label="Search documentation" autocomplete="off"><kbd>/</kbd><ul class="results"></ul></div>
+<nav class="links"><a href="https://github.com/maddeye/agentic-os" rel="noopener">GitHub</a><button class="theme" type="button" aria-label="Switch between dark and light"><svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg><svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg></button></nav>
+</header>
+<div class="shell">
+<nav class="side" aria-label="Documentation">
+<h4>Concepts</h4><ul>
+<li><a href="architecture.html">Architecture</a></li>
+<li><a href="threat-model.html">Threat model</a></li>
+</ul><h4>Design</h4><ul>
+<li><a href="isolation.html">Isolation</a></li>
+<li><a href="hostd.html">hostd</a></li>
+<li><a class="here" aria-current="page" href="storage.html">Storage</a></li>
+<li><a href="gui.html">GUI</a></li>
+</ul><h4>Operate</h4><ul>
+<li><a href="cli.html">CLI</a></li>
+<li><a href="administration.html">Administration</a></li>
+</ul><h4>Verify</h4><ul>
+<li><a href="test-plan.html">Test plan</a></li>
+<li><a href="baseline.html">Baseline</a></li></ul>
+</nav>
+<main>
+<p class="crumb">Design <i>/</i> Storage</p>
+<h1 id="storage-design">Storage design</h1>
+<p>Status: implemented by <a href="cli.html"><code>agentos</code></a> for Phase 3. <code>tests/storage/run</code> passes on Debian 13.7 with kernel 6.12 and btrfs-progs 6.14. <code>/var/lib/agent-os</code> must be on Btrfs, and the <a href="cli.html#package">package</a> enables quotas on it.</p>
+<h2 id="subvolumes">Subvolumes<a class="anchor" href="#subvolumes" aria-label="Link to this section">#</a></h2>
+<div class="table"><table><tr><th>Path</th><th>Type</th><th>In snapshots</th></tr><tr><td><code>projects/NAME</code></td><td>Subvolume</td><td>Boundary of the snapshot</td></tr><tr><td><code>workspace</code>, <code>home</code>, <code>state</code>, <code>artifacts</code></td><td>Directories</td><td>Yes</td></tr><tr><td><code>cache</code>, <code>tmp</code></td><td>Nested subvolumes</td><td>No</td></tr></table></div>
+<p>One snapshot of <code>projects/NAME</code> is a single point in time for everything it holds, so it does not need commands to stop. It has the state that a power loss would leave for a running command.</p>
+<p>A Btrfs snapshot leaves out nested subvolumes, and that is how <code>cache</code> and <code>tmp</code> stay out. A subvolume that a project creates is left out in the same way. The snapshot prints a warning, and <code>agentos project snapshots</code> shows how many it omitted. After a restore, an omitted subvolume is an empty directory.</p>
+<h2 id="snapshots">Snapshots<a class="anchor" href="#snapshots" aria-label="Link to this section">#</a></h2>
+<p>Each snapshot is <code>snapshots/NAME/ID/</code>, with a read-only <code>tree</code> subvolume and a <code>meta</code> file. Renaming a staging directory into place publishes it, so a crash never leaves a partial snapshot in the list.</p>
+<div class="table"><table><tr><th>Kind</th><th>Created by</th><th>Retention</th></tr><tr><td><code>manual</code></td><td><code>agentos project snapshot</code></td><td>Kept until <code>snapshot-delete</code></td></tr><tr><td><code>auto</code></td><td><code>--auto</code>, for task boundaries, and every restore</td><td>The newest <code>keep_automatic</code> per project</td></tr></table></div>
+<h2 id="restore">Restore<a class="anchor" href="#restore" aria-label="Link to this section">#</a></h2>
+<p><code>restore</code> works in this order:</p>
+<ol><li>Hide the project from <code>run</code> and record the target snapshot.</li><li>Mask the slice and kill every process of the UID.</li><li>Take an automatic <code>pre-restore</code> snapshot, so that the restore can be undone.</li><li>Build a writable tree from the snapshot, with empty <code>cache</code> and <code>tmp</code>.</li><li>Swap the trees with two renames, and remove the old tree.</li></ol>
+<p>The set of paths that exist identifies the step that a failed restore reached, so running it again finishes the work. A rerun must name the same snapshot. Projects get an empty <code>cache</code> on purpose, because a compromised agent can poison one. The empty <code>cache</code> costs a rebuild.</p>
+<h2 id="disk-pressure">Disk pressure<a class="anchor" href="#disk-pressure" aria-label="Link to this section">#</a></h2>
+<div class="table"><table><tr><th>Safeguard</th><th>Trigger</th><th>Effect</th></tr><tr><td>Project limit</td><td><code>--disk</code>, default 80% of the filesystem</td><td>Writes fail with <code>EDQUOT</code>.</td></tr><tr><td>Enrollment</td><td>Every minute</td><td>New subvolumes join their project's limit.</td></tr><tr><td>Snapshot refusal</td><td>Free space below <code>reserve_percent</code> (10)</td><td><code>snapshot</code> fails. A restore's safety snapshot still runs.</td></tr><tr><td>Pruning</td><td>Free space below <code>reserve_percent</code></td><td>Each project keeps one automatic snapshot.</td></tr><tr><td>Stopping</td><td>Free space below <code>critical_percent</code> (5) after pruning</td><td>The commands of the largest project stop.</td></tr></table></div>
+<p><code>/etc/agent-os/storage.conf</code> holds the three settings. The limit counts what a project references, so a snapshot does not use up its project's limit. Only the free-space checks cover snapshot growth.</p>
+<h2 id="backups">Backups<a class="anchor" href="#backups" aria-label="Link to this section">#</a></h2>
+<p><code>agentos project backup</code> writes one stream to standard output: a text header, a <code>btrfs send</code> stream, and a SHA-256 trailer. In this prototype, another machine pulls the backup:</p>
+<figure class="code"><figcaption><span>bash</span><button type="button">Copy</button></figcaption><pre><code>ssh admin@host 'sudo agentos project backup my-app --snapshot ID' | age -r RECIPIENT &gt; my-app.backup.age</code></pre></figure>
+<p>Pulling means that a compromised host cannot reach older backups. The stream is always full, and it needs encrypting outside <code>agentos</code>.</p>
+<p><code>agentos project recover</code> keeps the project's UID, limits, and toolchain selection. A selected toolchain must be installed again before commands can run. It spools the stream to disk and checks the trailer before anything parses the stream, so it needs free space for one extra copy. It refuses a name, account, or UID that is already in use.</p>
+<h2 id="measurements">Measurements<a class="anchor" href="#measurements" aria-label="Link to this section">#</a></h2>
+<p>From <code>tests/storage/benchmark</code> on 2026-11-08, in the <a href="baseline.html">baseline</a> VM. The corpus has 15128 entries and 185 MiB. Each value is a median, and few snapshots exist during the runs.</p>
+<div class="table"><table><tr><th>Configuration</th><th>Unpack (ms)</th><th>Copy and remove .py files (ms)</th><th>256 MiB random, direct (ms)</th><th>Corpus on disk (MiB)</th></tr><tr><td>No quota, no compression</td><td>426</td><td>939</td><td>688</td><td>211</td></tr><tr><td>Quota, no compression</td><td>423</td><td>937</td><td>644</td><td>210</td></tr><tr><td>Quota, zstd:1</td><td>679</td><td>934</td><td>714</td><td>117</td></tr><tr><td>No quota, zstd:1</td><td>670</td><td>938</td><td>734</td><td>117</td></tr></table></div>
+<div class="table"><table><tr><th>Operation on the corpus</th><th>Median (ms)</th></tr><tr><td>Snapshot</td><td>44</td></tr><tr><td>Restore, including the pre-restore snapshot</td><td>784</td></tr><tr><td>Backup to a file, 182 MiB</td><td>844</td></tr></table></div>
+<p>Quotas have no measurable cost at this scale. The Btrfs documentation warns that their cost grows with the number of snapshots, and this benchmark does not cover that.</p>
+<h2 id="open-decisions">Open decisions<a class="anchor" href="#open-decisions" aria-label="Link to this section">#</a></h2>
+<div class="table"><table><tr><th>Question</th><th>Recommendation</th><th>Needed by</th></tr><tr><td>Compression</td><td>Mount with <code>compress=zstd:1</code>. It saved 44% and made unpacking about 60% slower. The mount belongs to the installer.</td><td>Deferred past Phase 5: the installer does not set it yet.</td></tr><tr><td>Backup encryption, signing, schedule, and incremental sends</td><td>Compare restic with <code>btrfs send -p</code> once a real backup target exists.</td><td>Deferred past Phase 5: no real backup target exists yet.</td></tr><tr><td>Automatic snapshots at task boundaries</td><td>Have a harness or the system agent call <code>snapshot --auto</code>. Nothing calls it yet.</td><td>First harness integration</td></tr></table></div>
+<nav class="pager"><a class="prev" href="hostd.html"><small>Previous</small>hostd</a><a class="next" href="gui.html"><small>Next</small>GUI</a></nav>
+<p class="source">Generated from <a href="https://github.com/maddeye/agentic-os/blob/main/doc/STORAGE.md" rel="noopener">doc/STORAGE.md</a>.</p>
+</main>
+<aside class="toc"><h4>On this page</h4><ul><li><a href="#subvolumes">Subvolumes</a></li><li><a href="#snapshots">Snapshots</a></li><li><a href="#restore">Restore</a></li><li><a href="#disk-pressure">Disk pressure</a></li><li><a href="#backups">Backups</a></li><li><a href="#measurements">Measurements</a></li><li><a href="#open-decisions">Open decisions</a></li></ul></aside>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
