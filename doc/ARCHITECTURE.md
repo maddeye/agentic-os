@@ -1133,6 +1133,8 @@ A question leaves this list when the decision log in section 15 settles it.
 | 2026-11-09 | Recovery from a broken root is an installer repair that keeps the data partition | Projects survive without a recent backup, and the same medium that installs the host repairs it. Accounts and limits are rebuilt from the registry, so the root stays replaceable. Toolchains and administrator config are not preserved, because they live on the root. |
 | 2026-11-09 | `package_upgrade` takes no names and always needs approval | A host upgrade concerns the whole system, and a partial list could leave it inconsistent. It reuses the exact-archive approval, so a later publication cannot widen what applies. Recovery points stay open, because the ext4 root has no snapshots. |
 | 2026-11-09 | The installer enrolls one SSH key at the console and generates the host keys | No password or network path exists during enrollment, and the administrator can check the host key on the first connection instead of trusting it. The key can be pasted, or read from a USB stick when the console cannot paste. |
+| 2026-11-11 | The administrator can link one project to a TCP port of another | An agent in one project can drive a server in another, such as a T3 Code orchestrator, without a shared account or an orchestration runtime in the OS. Links are one-way, per port, and root-only. See `doc/ISOLATION.md` and gap 23. |
+| 2026-11-11 | The system agent can ask `hostd` for a project that runs an administrator's service | An orchestrator can make projects on demand without a project gaining a privileged socket. Services are root-owned scripts, so `hostd` stays closed and the OS names no harness. See `doc/HOSTD.md` and gap 24. |
 
 ---
 

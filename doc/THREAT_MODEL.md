@@ -64,6 +64,13 @@ A prompt-injected agent is T1 or T3. The design does not try to detect injection
 | Keep a graphical process after a session ends | T1, T2 | A9 | Applications run in the supervisor's process groups, and the compositor dies with its supervisor | `tests/gui/guest/cleanup.sh` |
 | Keep typed secrets in the input trace | T1, T2 | A3 | The trace stores the length of typed text, and `<char>` for printable keys | `tests/gui/guest/agent.sh` |
 | Reach another project's sockets or ports | T1, T2 | A1, A3 | Per-project network namespace, `nftables` forward policy | `abstract_socket`, `loopback_tcp`, `tests/integration/guest/network.sh` |
+| Use a link that the administrator did not grant, or one granted to another project | T1, T2 | A1, A3 | The `links` set names the source interface, the destination, and one port, and replies must belong to a connection that the source opened | `tests/integration/guest/network.sh` |
+| Add or change a link from a project | T1, T2 | A1, A3 | `agentos` runs only as root, and the links live in root-only metadata | `tests/integration/guest/network.sh` |
+| Keep using a link after `unlink` or `delete` | T1, T2 | A1, A3 | Replies match the same element, so open connections stop. `delete` removes every link of the project | `tests/integration/guest/network.sh`, `tests/integration/guest/delete.sh` |
+| Create a project, or reach a project's service, from a project | T1, T2 | A4 | Projects have no `hostd` socket | `tests/hostd/guest/services.sh` |
+| Run a command of the caller's choosing through a project create | T3 | A4 | A request names a service directory that the administrator wrote, and hostd runs only `agentos` with validated names | `tests/hostd/guest/services.sh`, unit tests |
+| Create projects without limit | T3 | A9 | `automatic_project_limit` counts existing projects and approved creates, and every create past it waits for approval | `tests/hostd/guest/services.sh`, unit tests |
+| Take a credential from a project that the administrator created | T3 | A1, A3 | Only a project whose registry entry names a service answers `service_credential` | `tests/hostd/guest/services.sh` |
 | Reach services on the host, or change the project network | T1, T2 | A4, A6 | Network namespace, `nftables` input policy, no capabilities | `host_loopback_ssh`, `host_uplink_ssh`, `net_admin`, `tests/integration/guest/network.sh` |
 | Modify host files or packages | T1, T2 | A4, A5 | `ProtectSystem=strict`, file modes | `etc_write`, `usr_write`, `boot_write`, `dpkg_db_write`, `apt_install`, `toolchain_write` |
 | Escalate through setuid, sudo, or D-Bus | T1, T2 | A4, A6 | `NoNewPrivileges=yes`, private `/run` | `setuid_binary`, `sudo`, `system_bus`, `capabilities`, `service_start` |
@@ -124,6 +131,8 @@ Each gap stays open until a later change closes it. The suite marks the first on
 20. **The first boot trusts whoever supplies the boot credential.** Until an administrator key exists, anyone who controls the hypervisor can enroll one. That party can already read the disk, and the file is never overwritten once it exists. An installed host already has a key, so this applies to the VM image.
 21. **The `admin` account has passwordless sudo.** A stolen administrator key is root on the host. The account has no password to type, and the image relies on the key alone.
 22. **The installer ISO is not signed.** Its checksum catches damage, and someone who can replace the ISO can replace the checksum too. Secure Boot must be off to start it. The installer also runs as root on the console, so anyone at the console before the disk is chosen can install their own key.
+23. **A link trusts the destination's own authentication.** A compromised source project reaches the linked port like the administrator does, from the same gateway address, and the destination cannot tell them apart. For a T3 Code orchestrator, whoever controls the source project controls each linked project at the access level that its pairing granted.
+24. **The system agent can create projects and take their credentials.** Up to `automatic_project_limit`, it needs no approval. It can then drive each project's service with that credential, and a T3 Code orchestrator that it runs is not in any project sandbox. It cannot delete a project, and the administrator's scripts decide what each service runs.
 
 ## Rules for later phases
 

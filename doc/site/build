@@ -33,6 +33,7 @@ PAGES = [
     ("Design", "GUI.md", "gui", "GUI", "Graphical sessions, capture, and remote viewing."),
     ("Operate", "CLI.md", "cli", "CLI", "The agentos commands."),
     ("Operate", "ADMINISTRATION.md", "administration", "Administration", "Installing and maintaining a host."),
+    ("Operate", "ORCHESTRATION.md", "orchestration", "Orchestration", "A T3 Code server that creates and drives projects."),
     ("Verify", "TEST_PLAN.md", "test-plan", "Test plan", "VM commands and what each suite proves."),
     ("Verify", "BASELINE.md", "baseline", "Baseline", "Measured capabilities and benchmarks of the unmodified test VM."),
 ]

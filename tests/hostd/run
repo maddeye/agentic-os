@@ -17,6 +17,7 @@ step packages
 step upgrade
 step privileges
 step toolchains
+step services
 step interrupt
 
 echo "### power loss"

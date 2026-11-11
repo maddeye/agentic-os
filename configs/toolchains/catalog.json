@@ -17,6 +17,15 @@
       "strip_components": 1,
       "check_argv": ["bin/node", "--version"],
       "check_stdout": "v26.13.0"
+    },
+    {
+      "name": "t3",
+      "version": "0.1.8",
+      "url": "https://github.com/pingdotgg/t3code/releases/download/v0.1.8/t3-0.1.8-linux-x64.tar.gz",
+      "sha256": "b9c49dc00c23fbbc5961bdaff2d88e556d96c8dbd638c4501e2937c70650a9e5",
+      "strip_components": 1,
+      "check_argv": ["t3", "--version"],
+      "check_stdout": "t3 v0.1.8"
     }
   ]
 }

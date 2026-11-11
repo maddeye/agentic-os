@@ -2,6 +2,12 @@
 destroy table inet agentos
 
 table inet agentos {
+	# Openings that the administrator grants with `agentos project link`: the source
+	# project's interface, the destination project's address, and a TCP port.
+	set links {
+		type ifname . ipv4_addr . inet_service
+	}
+
 	chain input {
 		type filter hook input priority filter; policy accept;
 		iifname "aos-*" ct state established,related accept
@@ -10,6 +16,10 @@ table inet agentos {
 
 	chain forward {
 		type filter hook forward priority filter; policy accept;
+		# The interface names the source project, so a project cannot claim another's link.
+		# Replies match the same element, so unlinking also stops open connections.
+		iifname "aos-*" oifname "aos-*" iifname . ip daddr . tcp dport @links accept
+		iifname "aos-*" oifname "aos-*" ct state established oifname . ip saddr . tcp sport @links accept
 		iifname "aos-*" oifname "aos-*" drop
 		iifname "aos-*" accept
 		oifname "aos-*" ct state established,related accept
@@ -23,3 +33,7 @@ table inet agentos {
 		ip saddr 10.213.0.0/16 masquerade
 	}
 }
+
+# The bracket makes this a pattern, and a pattern that matches no file is not an
+# error. The file is absent until the first `agentos project link`.
+include "/var/lib/agent-os/metadata/links.nf[t]"

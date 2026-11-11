@@ -24,6 +24,8 @@ pub enum Operation {
     PackageUpgrade {},
     ToolchainInstallGlobal { name: String, version: String },
     ToolchainRemoveGlobal { name: String, version: String },
+    /// Creates a project and starts a service that the administrator configured.
+    ProjectCreate { name: String, service: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -37,6 +39,10 @@ pub enum Request {
     ChangeReject { id: u64 },
     ChangeApply { id: u64 },
     Recover {},
+    /// Starts the service of a project that hostd created, if it is not running.
+    ServiceStart { project: String },
+    /// Runs the service's credential script and returns its output.
+    ServiceCredential { project: String },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -197,6 +203,9 @@ impl Operation {
             | Operation::ToolchainRemoveGlobal { name, version } => {
                 valid_toolchain_name(name) && valid_toolchain_version(version)
             }
+            Operation::ProjectCreate { name, service } => {
+                crate::project::valid_project_name(name) && crate::project::valid_service_name(service)
+            }
         };
         if valid {
             Ok(())
@@ -253,6 +262,8 @@ mod tests {
             r#"{"request":"change_approve","id":1,"as":"admin"}"#,
             r#"{"request":"change_plan","reason":"x","operation":{"type":"shell","command":"id"}}"#,
             r#"{"request":"change_plan","reason":"x","operation":{"type":"package_install","names":["a1"],"post":"id"}}"#,
+            r#"{"request":"change_plan","reason":"x","operation":{"type":"project_create","name":"a","service":"s","argv":["id"]}}"#,
+            r#"{"request":"service_start","project":"a","command":"id"}"#,
         ] {
             assert!(serde_json::from_str::<Request>(body).is_err(), "accepted {body}");
         }

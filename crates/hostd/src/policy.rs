@@ -11,6 +11,13 @@ pub struct Policy {
     pub automatic_packages: Vec<String>,
     pub automatic_toolchains: Vec<String>,
     pub protected_package_prefixes: Vec<String>,
+    /// Services whose projects the system agent may create without approval.
+    /// Policies written before this field existed allow none.
+    #[serde(default)]
+    pub automatic_project_services: Vec<String>,
+    /// Automatic creates stop once the host has this many projects.
+    #[serde(default)]
+    pub automatic_project_limit: usize,
 }
 
 impl Policy {
@@ -21,7 +28,8 @@ impl Policy {
         serde_json::from_str(&text).map_err(|error| Refusal::new("policy", format!("{PATH}: {error}")))
     }
 
-    pub fn evaluate(&self, operation: &Operation, impact: &Impact) -> Decision {
+    /// `projects` counts the host's projects. Tests pass their own.
+    pub fn evaluate_with(&self, operation: &Operation, impact: &Impact, projects: impl Fn() -> usize) -> Decision {
         let mut reasons = Vec::new();
         match operation {
             Operation::PackageInstall { names } => {
@@ -49,6 +57,15 @@ impl Policy {
                 reasons.push("toolchain removal always needs approval".to_string());
                 for project in &impact.used_by_projects {
                     reasons.push(format!("project {project} uses this toolchain"));
+                }
+            }
+            Operation::ProjectCreate { service, .. } => {
+                if !self.automatic_project_services.contains(service) {
+                    reasons.push(format!("service {service} is not on the automatic list"));
+                }
+                let count = projects();
+                if count >= self.automatic_project_limit {
+                    reasons.push(format!("the host has {count} projects, and the automatic limit is {}", self.automatic_project_limit));
                 }
             }
         }
@@ -83,13 +100,32 @@ mod tests {
             automatic_packages: vec!["ripgrep".into(), "linux-image-amd64".into()],
             automatic_toolchains: vec!["node/26.13.0".into()],
             protected_package_prefixes: vec!["linux-image".into()],
+            automatic_project_services: vec!["t3code".into()],
+            automatic_project_limit: 3,
         }
+    }
+
+    #[test]
+    fn projects_are_automatic_only_for_listed_services_below_the_limit() {
+        let create = |service: &str| Operation::ProjectCreate { name: "hub-a".into(), service: service.into() };
+        let decide = |service: &str, count: usize| policy().evaluate_with(&create(service), &Impact::default(), || count).level;
+        assert_eq!(decide("t3code", 2), Level::Automatic);
+        assert_eq!(decide("t3code", 3), Level::ApprovalRequired);
+        assert_eq!(decide("other", 0), Level::ApprovalRequired);
+    }
+
+    #[test]
+    fn an_older_policy_allows_no_automatic_project() {
+        let old = r#"{"automatic_packages":[],"automatic_toolchains":[],"protected_package_prefixes":[]}"#;
+        let policy: Policy = serde_json::from_str(old).unwrap();
+        let create = Operation::ProjectCreate { name: "a".into(), service: "t3code".into() };
+        assert_eq!(policy.evaluate_with(&create, &Impact::default(), || 0).level, Level::ApprovalRequired);
     }
 
     #[test]
     fn an_upgrade_always_needs_approval_and_names_what_apt_kept_back() {
         let impact = Impact { kept_back: vec!["held".into()], ..Impact::default() };
-        let decision = policy().evaluate(&Operation::PackageUpgrade {}, &impact);
+        let decision = policy().evaluate_with(&Operation::PackageUpgrade {}, &impact, || 0);
         assert_eq!(decision.level, Level::ApprovalRequired);
         assert_eq!(decision.reasons, ["package upgrades always need approval", "apt kept back held"]);
     }
@@ -109,8 +145,8 @@ mod tests {
     #[test]
     fn only_an_allowlisted_clean_install_is_automatic() {
         let impact = with_action(action(ActionKind::Install, "ripgrep"));
-        assert_eq!(policy().evaluate(&install("ripgrep"), &impact).level, Level::Automatic);
-        assert_eq!(policy().evaluate(&install("hello"), &impact).level, Level::ApprovalRequired);
+        assert_eq!(policy().evaluate_with(&install("ripgrep"), &impact, || 0).level, Level::Automatic);
+        assert_eq!(policy().evaluate_with(&install("hello"), &impact, || 0).level, Level::ApprovalRequired);
     }
 
     #[test]
@@ -123,22 +159,22 @@ mod tests {
             Impact { setuid_files: vec!["/usr/bin/x".into()], ..Impact::default() },
         ];
         for impact in cases {
-            assert_eq!(policy().evaluate(&install("ripgrep"), &impact).level, Level::ApprovalRequired, "{impact:?}");
+            assert_eq!(policy().evaluate_with(&install("ripgrep"), &impact, || 0).level, Level::ApprovalRequired, "{impact:?}");
         }
     }
 
     #[test]
     fn removals_always_need_a_human() {
         let remove = Operation::PackageRemove { names: vec!["ripgrep".into()] };
-        assert_eq!(policy().evaluate(&remove, &Impact::default()).level, Level::ApprovalRequired);
+        assert_eq!(policy().evaluate_with(&remove, &Impact::default(), || 0).level, Level::ApprovalRequired);
         let remove = Operation::ToolchainRemoveGlobal { name: "node".into(), version: "26.13.0".into() };
-        assert_eq!(policy().evaluate(&remove, &Impact::default()).level, Level::ApprovalRequired);
+        assert_eq!(policy().evaluate_with(&remove, &Impact::default(), || 0).level, Level::ApprovalRequired);
     }
 
     #[test]
     fn toolchains_follow_the_exact_version_on_the_list() {
         let op = |version: &str| Operation::ToolchainInstallGlobal { name: "node".into(), version: version.into() };
-        assert_eq!(policy().evaluate(&op("26.13.0"), &Impact::default()).level, Level::Automatic);
-        assert_eq!(policy().evaluate(&op("24.22.2"), &Impact::default()).level, Level::ApprovalRequired);
+        assert_eq!(policy().evaluate_with(&op("26.13.0"), &Impact::default(), || 0).level, Level::Automatic);
+        assert_eq!(policy().evaluate_with(&op("24.22.2"), &Impact::default(), || 0).level, Level::ApprovalRequired);
     }
 }

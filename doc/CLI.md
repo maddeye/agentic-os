@@ -29,6 +29,11 @@ The command and service names are provisional.
 | `agentos project restore NAME --snapshot ID --yes` | Stops all commands, replaces the project's data, and prints the ID of the automatic pre-restore snapshot. |
 | `agentos project backup NAME --snapshot ID` | Writes a backup stream to standard output. |
 | `agentos project recover` | Recreates a project from a backup stream on standard input. Prints `NAME`. |
+| `agentos project service NAME start` | Runs the service's `setup`, then starts it, unless it runs already. Prints `running` or `started`. |
+| `agentos project service NAME credential` | Runs the service's `credential` script as the project and prints its output. |
+| `agentos project link FROM TO PORT` | Lets project `FROM` open TCP connections to `PORT` on project `TO`. The reverse direction stays closed. |
+| `agentos project unlink FROM TO PORT` | Removes that link. Packets of connections already open are dropped from then on. |
+| `agentos project links [NAME]` | Prints `FROM`, `TO`, and `PORT` for every link, or for those that involve `NAME`. |
 | `agentos project reattach` | Rebuilds each registered project's account and limits from the data partition. Only the installer's repair needs it. |
 | `agentos project delete NAME --yes` | Stops all commands and removes all project data, its local snapshots, and the identity. |
 | `agentos storage check` | Runs the storage check at once. `agentos-storage.timer` runs it every minute. |
@@ -42,10 +47,11 @@ The command and service names are provisional.
 | `--memory-max SIZE` | `80%` | `MemoryMax` for the whole project. |
 | `--tasks N` | `4096` | `TasksMax` for the whole project. |
 | `--disk SIZE` | `80%` | Limit on all of the project's subvolumes together. A percentage means a share of the filesystem. |
+| `--service SERVICE` | None | Records a service from `/etc/agent-os/services`. [HOSTD.md](HOSTD.md#project-services) describes it. |
 
 `SIZE` is a number with an optional `K`, `M`, `G`, or `T` suffix, or a percentage. Memory percentages mean a share of RAM. All projects together are also limited by `agentos-project.slice`.
 
-`NAME` matches `^[a-z]([a-z0-9-]{0,26}[a-z0-9])?$`.
+`NAME` matches `^[a-z]([a-z0-9-]{0,26}[a-z0-9])?$`. `PORT` is a decimal number from 1 to 65535 with no leading zero.
 
 ## System commands
 
@@ -59,6 +65,9 @@ Replies are JSON on standard output. Refusals go to standard error.
 | `agentos system package upgrade --reason TEXT` | Plans an upgrade of every installed package. It always needs approval. |
 | `agentos system toolchain install NAME VERSION --reason TEXT` | Plans a global toolchain install from the catalog. |
 | `agentos system toolchain remove NAME VERSION --reason TEXT` | Plans a global toolchain removal. |
+| `agentos system project create NAME --service SERVICE --reason TEXT` | Plans a project that runs an administrator's service. Applies it at once if policy allows. |
+| `agentos system service start PROJECT` | Starts that service again, for example after a reboot. |
+| `agentos system service credential PROJECT` | Returns the service's credential and the project's address. |
 | `agentos system change show ID` | Prints one change. |
 | `agentos system change approve ID` | Approves a change. Administrator only. |
 | `agentos system change reject ID` | Rejects a change. Administrator only. |

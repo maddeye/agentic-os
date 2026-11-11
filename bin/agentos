@@ -16,14 +16,19 @@ toolchains=/opt/agent-os/toolchains
 uid_first=20000
 uid_last=29999
 storage_conf=/etc/agent-os/storage.conf
+# Administrator-written scripts that hostd may start in a project it creates.
+services=/etc/agent-os/services
 backup_magic=agentos-backup-1
+# Openings from one project to a TCP port of another. The firewall includes this
+# file, and its comments are the list, so one rename changes both.
+links_nft=$data/metadata/links.nft
 # A project's cache and tmp are subvolumes of their own, so snapshots leave them out.
 captured_children=(workspace home state artifacts)
 excluded_children=(cache tmp)
 
 usage() {
 	cat >&2 <<'USAGE'
-usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memory-max SIZE] [--tasks N] [--disk SIZE]
+usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memory-max SIZE] [--tasks N] [--disk SIZE] [--service SERVICE]
        agentos project list
        agentos project inspect NAME
        agentos project run [--detach] NAME -- COMMAND [ARG...]
@@ -40,6 +45,10 @@ usage: agentos project create NAME [--cpu PERCENT] [--memory-high SIZE] [--memor
        agentos project restore NAME --snapshot ID --yes
        agentos project backup NAME --snapshot ID > FILE
        agentos project recover < FILE
+       agentos project service NAME start|credential
+       agentos project link FROM TO PORT
+       agentos project unlink FROM TO PORT
+       agentos project links [NAME]
        agentos project reattach
        agentos project delete NAME --yes
        agentos storage check
@@ -65,6 +74,15 @@ check_id() {
 
 check_snapshot_id() {
 	[[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]{9}$ ]] || die "invalid snapshot id: '$1'"
+}
+
+check_service() {
+	[[ "$1" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || die "invalid service name: '$1'"
+	[[ -x "$services/$1/start" ]] || die "service is not configured: $1"
+}
+
+check_port() {
+	[[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && (( $1 <= 65535 )) || die "invalid port: '$1'"
 }
 
 check_label() {
@@ -279,7 +297,7 @@ install_slice() { # <uid>
 }
 
 cmd_create() {
-	local name="" cpu="" memory_high=70% memory_max=80% tasks=4096 disk=80%
+	local name="" cpu="" memory_high=70% memory_max=80% tasks=4096 disk=80% service=""
 	while (( $# )); do
 		case "$1" in
 			--cpu) cpu=${2:-}; [[ "$cpu" =~ ^[1-9][0-9]*$ ]] || die "invalid --cpu"; shift 2 ;;
@@ -287,6 +305,7 @@ cmd_create() {
 			--memory-max) memory_max=${2:-}; check_size "$memory_max"; shift 2 ;;
 			--tasks) tasks=${2:-}; [[ "$tasks" =~ ^[1-9][0-9]*$ ]] || die "invalid --tasks"; shift 2 ;;
 			--disk) disk=${2:-}; check_size "$disk"; shift 2 ;;
+			--service) service=${2:-}; check_service "$service"; shift 2 ;;
 			-*) usage ;;
 			*) [[ -z "$name" ]] || usage; name=$1; shift ;;
 		esac
@@ -323,8 +342,11 @@ cmd_create() {
 
 	write_slice "$uid" "$memory_high" "$memory_max" "$tasks" "$cpu"
 
-	printf 'name=%s\nuid=%s\ncreated=%s\nprofile=native-restricted\ndisk_limit_bytes=%s\n' \
-		"$name" "$uid" "$(date -u +%FT%TZ)" "$disk_bytes" > "$registry/$name.tmp"
+	{
+		printf 'name=%s\nuid=%s\ncreated=%s\nprofile=native-restricted\ndisk_limit_bytes=%s\n' \
+			"$name" "$uid" "$(date -u +%FT%TZ)" "$disk_bytes"
+		[[ -z "$service" ]] || echo "service=$service"
+	} > "$registry/$name.tmp"
 	mv "$registry/$name.tmp" "$registry/$name"
 	rm -f "$intent"
 	echo "$name"
@@ -419,22 +441,10 @@ cmd_run() {
 	[[ "${2:-}" == -- && $# -ge 3 ]] || usage
 	shift 2
 
-	local uid id line flags=()
+	local uid id start
 	uid=$(project_uid "$name")
 	id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
-	while IFS= read -r line; do
-		[[ -z "$line" || "$line" == \#* ]] && continue
-		line=${line//@ROOT@/$projects/$name}
-		flags+=(-p "${line//@UID@/$uid}")
-	done < "$properties"
-	if grep -q '^toolchain\.' "$registry/$name"; then
-		flags+=(-p "Environment=PATH=$(toolchain_path "$name")")
-	fi
-
-	# env finds COMMAND inside the sandbox, on the project's PATH. Expansion stays
-	# off because systemd would otherwise rewrite $VAR in the arguments.
-	local start=(systemd-run --expand-environment=no --collect --quiet --unit="aos-run-$uid-$id.service"
-		--slice="$(slice_of "$uid")" --uid="aos-$name" --gid="aos-$name" "${flags[@]}")
+	sandbox_unit "$name" "$uid" "aos-run-$uid-$id.service"
 	if $detach; then
 		"${start[@]}" -- /usr/bin/env -- "$@"
 		echo "$id"
@@ -443,6 +453,58 @@ cmd_run() {
 	else
 		exec "${start[@]}" --pipe --wait -- /usr/bin/env -- "$@"
 	fi
+}
+
+# Sets `start` to a systemd-run command line for one sandboxed unit of the project.
+# env finds the command inside the sandbox, on the project's PATH. Expansion stays
+# off because systemd would otherwise rewrite $VAR in the arguments.
+sandbox_unit() { # <name> <uid> <unit>
+	local line flags=()
+	while IFS= read -r line; do
+		[[ -z "$line" || "$line" == \#* ]] && continue
+		line=${line//@ROOT@/$projects/$1}
+		flags+=(-p "${line//@UID@/$2}")
+	done < "$properties"
+	if grep -q '^toolchain\.' "$registry/$1"; then
+		flags+=(-p "Environment=PATH=$(toolchain_path "$1")")
+	fi
+	start=(systemd-run --expand-environment=no --collect --quiet --unit="$3"
+		--slice="$(slice_of "$2")" --uid="aos-$1" --gid="aos-$1" "${flags[@]}")
+}
+
+# A service runs the scripts in $services/SERVICE as the project. `start` runs
+# `setup` and waits, then starts the service in a unit with a fixed name, so a
+# second start finds it running. hostd uses this after a create and a reboot.
+cmd_service() { # <name> <start|credential>
+	local name=${1:-} verb=${2:-} uid service start
+	[[ $# -eq 2 ]] || usage
+	check_name "$name"
+	uid=$(project_uid "$name")
+	service=$(sed -n 's/^service=//p' "$registry/$name")
+	[[ -n "$service" ]] || die "project $name has no service"
+	check_service "$service"
+	case "$verb" in
+		start)
+			local unit=aos-svc-$uid.service
+			if systemctl is-active --quiet "$unit"; then
+				echo running
+				return
+			fi
+			if [[ -x "$services/$service/setup" ]]; then
+				sandbox_unit "$name" "$uid" "aos-setup-$uid.service"
+				"${start[@]}" --pipe --wait -- "$services/$service/setup" </dev/null >&2 || die "setup of $service failed"
+			fi
+			sandbox_unit "$name" "$uid" "$unit"
+			"${start[@]}" -- "$services/$service/start"
+			echo started
+			;;
+		credential)
+			[[ -x "$services/$service/credential" ]] || die "service $service has no credential script"
+			sandbox_unit "$name" "$uid" "aos-credential-$uid.service"
+			"${start[@]}" --pipe --wait -- "$services/$service/credential" </dev/null
+			;;
+		*) usage ;;
+	esac
 }
 
 # Sessions run as the project, so root only picks the unit and never opens a project
@@ -501,6 +563,69 @@ stop_project() { # <name> <uid>
 	! pgrep -U "$2" >/dev/null || die "processes of $1 are still running"
 }
 
+# Prints one "FROM_UID TO_UID PORT" line per link.
+current_links() { [[ ! -f "$links_nft" ]] || sed -n 's/^# link //p' "$links_nft"; }
+
+# Replaces the links with the lines on standard input and loads them. The file is
+# renamed into place, so a kill leaves the old or the new set, never a mix.
+save_links() {
+	local from to port
+	{
+		echo "# Generated by agentos project link. Each element follows its own comment."
+		echo "flush set inet agentos links"
+		sort -u | while read -r from to port; do
+			echo "# link $from $to $port"
+			echo "add element inet agentos links { \"aos-$from\" . $(agentos-netns address "$to") . $port }"
+		done
+	} > "$links_nft.new"
+	mv "$links_nft.new" "$links_nft"
+	nft -f "$links_nft"
+}
+
+link_args() { # <from> <to> <port>, sets from_uid and to_uid
+	[[ $# -eq 3 ]] || usage
+	check_name "$1"
+	check_name "$2"
+	check_port "$3"
+	[[ "$1" != "$2" ]] || die "a project already reaches its own ports"
+	take_lock
+	from_uid=$(project_uid "$1")
+	to_uid=$(project_uid "$2")
+}
+
+cmd_link() {
+	local from_uid to_uid
+	link_args "$@"
+	{ current_links; echo "$from_uid $to_uid $3"; } | save_links
+}
+
+cmd_unlink() {
+	local from_uid to_uid
+	link_args "$@"
+	current_links | awk -v link="$from_uid $to_uid $3" '$0 != link' | save_links
+}
+
+cmd_links() {
+	local name=${1:-} uid="" entry base uid_of from to port
+	[[ $# -le 1 ]] || usage
+	if [[ -n "$name" ]]; then
+		check_name "$name"
+		uid=$(project_uid "$name")
+	fi
+	local -A names=()
+	for entry in "$registry"/*; do
+		[[ -f "$entry" ]] || continue
+		base=${entry##*/}
+		uid_of=$(sed -n 's/^uid=//p' "$entry")
+		[[ -z "$uid_of" ]] || names[$uid_of]=${base%%.*}
+	done
+	printf 'FROM\tTO\tPORT\n'
+	current_links | while read -r from to port; do
+		[[ -z "$uid" || "$from" == "$uid" || "$to" == "$uid" ]] || continue
+		printf '%s\t%s\t%s\n' "${names[$from]:-uid-$from}" "${names[$to]:-uid-$to}" "$port"
+	done
+}
+
 cmd_delete() {
 	local name=${1:-}
 	check_name "$name"
@@ -520,6 +645,8 @@ cmd_delete() {
 
 	stop_project "$name" "$uid"
 	systemctl stop "agentos-netns@$uid.service" 2>/dev/null || true
+	# UIDs are never reused, so a link that the firewall still holds matches nothing.
+	current_links | awk -v uid="$uid" '$1 != uid && $2 != uid' | save_links >/dev/null 2>&1 || true
 	# A project can create nested Btrfs subvolumes, so no --one-file-system here.
 	remove_tree "${projects:?}/$name"
 	remove_tree "${snapshots:?}/$name"
@@ -949,6 +1076,10 @@ case "$verb" in
 	restore) cmd_restore "$@" ;;
 	backup) cmd_backup "$@" ;;
 	recover) cmd_recover "$@" ;;
+	service) cmd_service "$@" ;;
+	link) cmd_link "$@" ;;
+	unlink) cmd_unlink "$@" ;;
+	links) cmd_links "$@" ;;
 	reattach) cmd_reattach "$@" ;;
 	delete) cmd_delete "$@" ;;
 	*) usage ;;

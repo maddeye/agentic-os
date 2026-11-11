@@ -71,6 +71,10 @@ A reboot does not resume commands. Start them again after each reboot. [Command 
 
 To limit a project, pass `--cpu`, `--memory-max`, `--tasks`, or `--disk` to `create`. Agent OS has no command that changes the limits of an existing project.
 
+## Orchestrate projects with T3 Code
+
+[Orchestration](ORCHESTRATION.md) sets up a T3 Code server that hands out work to other projects, and that can create them through `hostd`. You reach it from the T3 Code app on a phone or PC.
+
 ## Approve a system agent's change
 
 A system agent runs under the `agentos-system` account. Start a harness there with `sudo -iu agentos-system`. Its host changes go through `hostd`, and most of them wait for you.

@@ -3,7 +3,7 @@
 use crate::protocol::{Action, Change, Level, Operation, Outcome, Refusal, Request, State, validate_reason};
 use crate::policy::Policy;
 use crate::store::{now, Store};
-use crate::{apt, toolchain};
+use crate::{apt, project, toolchain};
 use serde_json::{json, Value};
 use std::ffi::{CStr, CString};
 
@@ -73,9 +73,15 @@ fn is_package(operation: &Operation) -> bool {
     matches!(operation, Operation::PackageInstall { .. } | Operation::PackageRemove { .. } | Operation::PackageUpgrade {})
 }
 
+fn is_project(operation: &Operation) -> bool {
+    matches!(operation, Operation::ProjectCreate { .. })
+}
+
 fn still_matches(change: &Change) -> bool {
     let current = if is_package(&change.operation) {
         apt::still_matches(change.id, &change.operation, &change.impact)
+    } else if is_project(&change.operation) {
+        project::still_matches(&change.operation, &change.impact)
     } else {
         toolchain::still_matches(&change.operation, &change.impact)
     };
@@ -85,6 +91,8 @@ fn still_matches(change: &Change) -> bool {
 fn run_change(change: &Change) -> Result<(), String> {
     if is_package(&change.operation) {
         apt::apply(change.id, &change.operation, &change.impact)
+    } else if is_project(&change.operation) {
+        project::apply(&change.operation)
     } else {
         toolchain::apply(change.id, &change.operation)
     }
@@ -93,6 +101,8 @@ fn run_change(change: &Change) -> Result<(), String> {
 fn verify(operation: &Operation, actions: &[Action]) -> (bool, String) {
     if is_package(operation) {
         apt::verify(operation, actions)
+    } else if is_project(operation) {
+        project::verify(operation)
     } else {
         toolchain::verify(operation)
     }
@@ -106,6 +116,7 @@ fn recovery_reference(operation: &Operation) -> String {
         Operation::PackageUpgrade {} => "no single command undoes an upgrade. impact.actions lists each previous version.".to_string(),
         Operation::ToolchainInstallGlobal { name, version } => format!("agentos system toolchain remove {name} {version}"),
         Operation::ToolchainRemoveGlobal { name, version } => format!("agentos system toolchain install {name} {version}"),
+        Operation::ProjectCreate { name, .. } => format!("agentos project delete {name} --yes"),
     }
 }
 
@@ -142,10 +153,25 @@ impl Broker {
                     Request::ChangeApprove { id } => self.decide(caller, id, true),
                     Request::ChangeReject { id } => self.decide(caller, id, false),
                     Request::ChangeApply { id } => self.apply(caller, id),
+                    Request::ServiceStart { project } => self.service(caller, "service_start", &project, project::service_start),
+                    Request::ServiceCredential { project } => {
+                        self.service(caller, "service_credential", &project, project::service_credential)
+                    }
                     _ => unreachable!("read-only requests return above"),
                 }
             }
         }
+    }
+
+    /// The audit records that a credential was issued, never the credential itself.
+    fn service(&self, caller: &Caller, event: &str, name: &str, run: fn(&str) -> Result<Value, Refusal>) -> Result<Value, Refusal> {
+        let result = run(name);
+        let outcome = match &result {
+            Ok(_) => "ok",
+            Err(refusal) => refusal.code,
+        };
+        self.audit(caller, event, json!({ "project": name, "result": outcome }))?;
+        result
     }
 
     fn status(&self) -> Result<Value, Refusal> {
@@ -170,7 +196,13 @@ impl Broker {
         let id = self.store.next_id()?;
         // Planning runs apt as root, so its record comes first.
         self.audit(caller, "planning", json!({ "change": id, "action": operation, "reason": reason }))?;
-        let planned = if is_package(&operation) { apt::plan(id, &operation) } else { toolchain::plan(&operation) };
+        let planned = if is_package(&operation) {
+            apt::plan(id, &operation)
+        } else if is_project(&operation) {
+            project::plan(&operation)
+        } else {
+            toolchain::plan(&operation)
+        };
         let impact = match planned {
             Ok(impact) => impact,
             Err(refusal) => {
@@ -178,7 +210,10 @@ impl Broker {
                 return self.refuse_plan(caller, &operation, refusal);
             }
         };
-        let decision = policy.evaluate(&operation, &impact);
+        // Approved creates that have not run yet count too, so a burst of plans
+        // cannot pass the limit before any of them applies.
+        let pending = self.store.all()?.iter().filter(|c| is_project(&c.operation) && c.state == State::Approved).count();
+        let decision = policy.evaluate_with(&operation, &impact, || project::project_count() + pending);
         let automatic = decision.level == Level::Automatic;
         let change = Change {
             id,
@@ -275,6 +310,12 @@ impl Broker {
             self.audit(caller, "recovery_started", json!({ "change": id, "action": change.operation }))?;
             let repair = if is_package(&change.operation) {
                 apt::repair(&change.impact.actions)
+            } else if is_project(&change.operation) {
+                // Each step resumes or finds its work done, so recovery runs them again.
+                match project::apply(&change.operation) {
+                    Ok(()) => "finished the create".to_string(),
+                    Err(error) => format!("could not finish the create: {error}"),
+                }
             } else {
                 toolchain::clean_staging(id);
                 "removed staging files".to_string()
@@ -303,6 +344,8 @@ mod tests {
             Request::ChangePlan { reason: "r".into(), operation },
             Request::ChangeApply { id: 1 },
             Request::Recover {},
+            Request::ServiceStart { project: "a".into() },
+            Request::ServiceCredential { project: "a".into() },
         ]
     }
 

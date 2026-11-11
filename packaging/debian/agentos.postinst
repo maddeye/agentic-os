@@ -16,6 +16,8 @@ if [ "$1" = configure ]; then
 		--home-dir /var/lib/agent-os/system-agent --shell /bin/bash agentos-system
 	install_default hostd-policy.json /etc/agent-os/hostd-policy.json
 	install_default storage.conf /etc/agent-os/storage.conf
+	# The administrator adds the services that hostd may start in new projects.
+	install -d -o root -g root -m 0755 /etc/agent-os/services
 	install -d -o root -g root -m 0711 /var/lib/agent-os
 	# hostd masks these two from package scripts, so an upgrade through it cannot change them.
 	[ -d /var/lib/agent-os/projects ] || install -d -o root -g root -m 0711 /var/lib/agent-os/projects

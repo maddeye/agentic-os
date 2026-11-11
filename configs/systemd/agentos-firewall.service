@@ -1,5 +1,7 @@
 [Unit]
 Description=Agent OS project network policy
+# The policy includes the project links from the data partition.
+RequiresMountsFor=/var/lib/agent-os
 
 [Service]
 Type=oneshot

@@ -16,6 +16,9 @@ agent target -- bash -c '
 '
 eq "project created a nested subvolume" "file" "$(ls "$root/workspace/nested-subvolume")"
 agentos project run --detach target -- sleep 600 >/dev/null
+agentos project link target beta 45100
+agentos project link beta target 45101
+target_address=$(agentos project inspect target | sed -n 's/^address=//p')
 hostname_before=$(cat /etc/hostname)
 agent beta -- bash -c 'echo kept > ~/keep'
 
@@ -31,6 +34,8 @@ eq "processes are gone" 1 "$(status_of pgrep -U "$uid")"
 eq "slice is gone" 1 "$(status_of test -e "/etc/systemd/system/agentos-project-$uid.slice")"
 eq "network namespace is gone" 1 "$(status_of test -e "/run/netns/aos-$uid")"
 eq "host interface is gone" 1 "$(status_of ip link show "aos-$uid")"
+eq "links are gone" "FROM TO PORT alpha beta 45100" "$(agentos project links | xargs)"
+eq "firewall holds no link of the project" 0 "$(nft list set inet agentos links | grep -c -e "aos-$uid" -e "$target_address ")"
 eq "no file keeps the UID" 0 "$(owned_files "$uid")"
 eq "symlink targets survive" "$hostname_before" "$(cat /etc/hostname)"
 eq "other project data survives" kept "$(agent beta -- bash -c 'cat ~/keep')"

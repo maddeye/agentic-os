@@ -45,11 +45,21 @@ Each project owns one `/30` in `10.213.0.0/16`, calculated from its UID. The hos
 | Traffic | Result |
 |---|---|
 | Project to the internet or LAN | Allowed, with masquerade |
-| Project to another project | Dropped |
+| Project to another project | Dropped, except a TCP port that `agentos project link` opened |
 | Project to any host address | Dropped |
 | Host to a project port | Allowed |
 | Internet or LAN to a project | Dropped |
 | Forwarding unrelated to projects | Dropped |
+
+### Project links
+
+`agentos project link FROM TO PORT` lets one project open TCP connections to one port of another. It is for an agent in one project that drives a server in another, such as a [T3 Code orchestrator](ORCHESTRATION.md#set-up-a-project-hub). Only root can add one.
+
+The `links` set in the policy holds the source project's host interface, the destination project's address, and the port. The interface stands for the source, because a project has no capability to send from another project's interface. Replies pass only as part of a connection that the source opened, so the destination cannot open one back. Replies match the same element, so after `unlink` both directions of an open connection are dropped.
+
+`agentos` keeps the links in `/var/lib/agent-os/metadata/links.nft`, one comment and one `nftables` element for each, and replaces the file in one rename. The policy includes that file, so links return with every firewall start and reload. `delete` removes every link of the project. Links are host state, so snapshots, restore, backups, and `recover` neither carry nor change them.
+
+The destination sees a linked connection from its own gateway address, the same as a connection from the administrator. Only the destination service's own authentication tells them apart.
 
 The firewall unit turns on `net.ipv4.ip_forward` after it loads the policy. The last rule keeps the host from acting as a router. A host that must also route other traffic, for example for rootful Docker, needs a changed policy.
 
@@ -96,4 +106,4 @@ Root owns `projects/NAME` so that a project cannot replace `workspace` with a sy
 
 `MemoryDenyWriteExecute` stays off, because JIT runtimes such as Node.js need writable and executable memory (`jit_rwx_memory`). `RestrictNamespaces` stays off, because browser sandboxes need user namespaces (`user_namespace`).
 
-`/dev/shm` and SysV IPC are private per command. Two commands in one project cannot share them. Pi completes a full tool-call loop under this restriction. Other harnesses are untested.
+`/dev/shm` and SysV IPC are private per command. Two commands in one project cannot share them. Pi completes a full tool-call loop under this restriction, both alone and driven by a T3 Code server in a separate command. Other harnesses are untested.

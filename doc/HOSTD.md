@@ -37,6 +37,8 @@ Send one JSON object and one newline, up to 64 KiB. The whole request must arriv
 | `change_approve`, `change_reject` | `id` | Records the administrator's decision. |
 | `change_apply` | `id` | Applies an approved change and verifies it. |
 | `recover` | None | Finishes any interrupted change. Every mutating request also does this first. |
+| `service_start` | `project` | Starts the service of a project that hostd created, unless it is running. Returns its address and `running` or `started`. |
+| `service_credential` | `project` | Runs the service's `credential` script as the project and returns its output, up to 4 KiB, with the project's address. |
 
 | `operation.type` | Fields |
 |---|---|
@@ -45,6 +47,7 @@ Send one JSON object and one newline, up to 64 KiB. The whole request must arriv
 | `package_upgrade` | None |
 | `toolchain_install_global` | `name`, `version` |
 | `toolchain_remove_global` | `name`, `version` |
+| `project_create` | `name`, `service` |
 
 `ServiceEnableDisable`, `UpgradePlan`, and recovery-point operations do not exist yet.
 
@@ -79,6 +82,8 @@ The administrator owns `/etc/agent-os/hostd-policy.json`. The package copies the
 | `automatic_packages` | Package names that may install without approval. Empty by default. |
 | `automatic_toolchains` | `name/version` entries that may install without approval. Empty by default. |
 | `protected_package_prefixes` | Package name prefixes that always need approval. |
+| `automatic_project_services` | Services whose projects may be created without approval. Empty by default. |
+| `automatic_project_limit` | No automatic create runs once the host has this many projects, counting approved creates that have not applied. 0 by default. |
 
 A package install is automatic only when all of these are true:
 
@@ -88,6 +93,24 @@ A package install is automatic only when all of these are true:
 - No package ships a setuid file, or any file in a systemd unit or generator directory or `/etc/init.d`.
 
 Upgrades and removals always need approval. Removing an essential package is refused outright. Installs pass `--no-remove`, so an install can never remove a package.
+
+Every create needs approval unless its service is on `automatic_project_services` and the count is below `automatic_project_limit`. A policy written before these fields existed allows no automatic create.
+
+## Project services
+
+The system agent can ask for a new project that runs a service. The administrator defines each service as a directory under `/etc/agent-os/services`, and a request names a directory and nothing more. The package creates the empty directory.
+
+| Script | Required | Runs |
+|---|---|---|
+| `start` | Yes | As the project's long-running service, in the unit `aos-svc-UID.service`. |
+| `setup` | No | Before each start, as the project, and waits. It must be safe to run again. |
+| `credential` | No | On `service_credential`, as the project. Its output goes to the caller. |
+
+All three run as the project under `native-restricted`, like `agentos project run`. hostd cannot see project data, so it runs `agentos project create NAME --service SERVICE` and `agentos project service NAME start` in transient units of their own.
+
+Only a project whose registry entry names a service accepts `service_start` and `service_credential`, so the system agent cannot reach into a project that the administrator created by hand. The audit records each request and its result, never the credential. The output comes from the project, so hostd passes it on as text and parses none of it.
+
+The undo command of a create is `agentos project delete NAME --yes`. The system agent cannot delete a project. A reboot stops every service, and `service_start` brings one back. `restore` keeps the service. `recover` brings a project back from a backup without it, so the system agent gets no credential for what a backup holds.
 
 ## Package names
 
@@ -132,6 +155,7 @@ Each event is written and synced before the step it describes or the step that f
 | `finished` | A change ends, with its verification and undo command. |
 | `recovery_started` | A repair is about to run. |
 | `recovery` | A repair has run, with its result. |
+| `service_start`, `service_credential` | The caller asked for a project's service, with the result. |
 
 ## Recovery
 
@@ -141,6 +165,7 @@ A change left in `applying` was interrupted by a crash, a kill, or power loss. T
 |---|---|---|
 | Package | `dpkg --configure -a`, then `apt-get -f --no-remove --no-download install` if it touches only approved packages | `applied` if verification passes, otherwise `failed` |
 | Toolchain | Removes the staging files | `applied` if the rename happened, otherwise `failed` |
+| Project | Runs the create and the service start again. A finished step is skipped | `applied` if the service runs, otherwise `failed` |
 
 Recovery rolls forward. It does not undo a change that had already finished unpacking. Each outcome records the command that would undo the change.
 

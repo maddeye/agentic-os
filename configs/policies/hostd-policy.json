@@ -1,6 +1,8 @@
 {
   "automatic_packages": [],
   "automatic_toolchains": [],
+  "automatic_project_services": [],
+  "automatic_project_limit": 0,
   "protected_package_prefixes": [
     "agentos",
     "linux-",

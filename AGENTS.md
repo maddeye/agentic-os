@@ -134,6 +134,7 @@ Read the one that covers your change before you edit:
 - [GUI.md](doc/GUI.md) covers graphical sessions, capture, and remote viewing.
 - [CLI.md](doc/CLI.md) covers `agentos` commands.
 - [ADMINISTRATION.md](doc/ADMINISTRATION.md) covers installing and maintaining a host.
+- [ORCHESTRATION.md](doc/ORCHESTRATION.md) covers a T3 Code orchestrator built on project services and links.
 - [TEST_PLAN.md](doc/TEST_PLAN.md) covers VM commands and what each suite proves.
 
 Keep them true in the same change:

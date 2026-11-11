@@ -79,8 +79,10 @@ The last line is `PASS: integration`. The command needs internet access. It test
 - Project creation, name validation, UID allocation, and command execution.
 - A project-local Node.js and Pi install, with versions pinned in `tests/integration/versions.env`.
 - A full Pi tool-call loop against `stub_model.py`, a local server that needs no credentials.
+- The same loop driven through a T3 Code server, pinned in the same file. It runs as the project, serves on the project's address, is reachable by the administrator and not by another project, and its Pi process ends when the server stops. A second project's T3 Code server links to it only while `agentos project link` allows it.
 - CPU, memory, and task limits for one command, for several commands together, and for all projects together.
 - Project network isolation, internet access, and name resolution.
+- Project links: refusals, one port in one direction for one project, open connections after `unlink`, a firewall reload, a reboot, and `delete`.
 - A detached command that outlives a killed SSH client.
 - Data, identities, and tools across a reboot.
 - Deletion with running processes, symlinks, read-only subvolumes, a failed first attempt, and concurrent command starts.
@@ -98,6 +100,7 @@ The last line is `PASS: hostd`. The command needs internet access. It tests thes
 - Self-approval, stale plans, republished and tampered archives, failed upgrades, rejected changes, policy limits, and hostile package names.
 - Socket access, forged identity, malformed input, slow clients, full connection slots, and what the system agent cannot do.
 - Two global Node.js versions selected per project, read-only access, bad digests, and failed checks.
+- Projects that the system agent creates with a service: approval, the automatic limit, refusals, credentials kept out of the audit, a restart after `stop`, a T3 Code server run by the system agent that links to one, and a broker killed during a create.
 - A broker killed during a package script and during a toolchain install, a concurrent request, and a power cut.
 
 `packaging/build` runs the Rust unit tests and builds the binaries and the `agentos` package with Debian's toolchain in a pinned container. Every VM deployment runs it, so a failing unit test stops the suites.
@@ -223,7 +226,7 @@ Each suite then runs in its own job and its own VM, the same as a local run. One
 
 To reproduce a failure, run the suite's command from the workflow matrix on a machine with `/dev/kvm`.
 
-The integration and hostd suites download from `snapshot.debian.org`, `nodejs.org`, and the npm registry while they run. If one of them fails on a download, the log shows the failing URL. Rerun the failed job.
+The integration and hostd suites download from `snapshot.debian.org`, `nodejs.org`, `github.com`, and the npm registry while they run. If one of them fails on a download, the log shows the failing URL. Rerun the failed job.
 
 ## Regenerate the baseline
 

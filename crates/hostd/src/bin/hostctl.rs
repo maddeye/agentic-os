@@ -16,6 +16,8 @@ const USAGE: &str = "usage: agentos system status
        agentos system package install|remove NAME... --reason TEXT
        agentos system package upgrade --reason TEXT
        agentos system toolchain install|remove NAME VERSION --reason TEXT
+       agentos system project create NAME --service SERVICE --reason TEXT
+       agentos system service start|credential PROJECT
        agentos system change show|approve|reject|apply ID
        agentos system change history";
 
@@ -93,6 +95,10 @@ fn dispatch(mut args: Vec<String>) -> Option<ExitCode> {
         ["status"] => return Some(finish(send(&Request::SystemStatus {}))),
         ["recover"] => return Some(finish(send(&Request::Recover {}))),
         ["change", "history"] => return Some(finish(send(&Request::ChangeHistory {}))),
+        ["service", "start", project] => return Some(finish(send(&Request::ServiceStart { project: project.to_string() }))),
+        ["service", "credential", project] => {
+            return Some(finish(send(&Request::ServiceCredential { project: project.to_string() })))
+        }
         ["change", verb, id] => {
             let request = change_request(verb, id.parse().ok()?)?;
             return Some(finish(send(&request)));
@@ -109,6 +115,7 @@ fn dispatch(mut args: Vec<String>) -> Option<ExitCode> {
         ["package", "upgrade"] => Operation::PackageUpgrade {},
         ["toolchain", "install", name, version] => Operation::ToolchainInstallGlobal { name: name.to_string(), version: version.to_string() },
         ["toolchain", "remove", name, version] => Operation::ToolchainRemoveGlobal { name: name.to_string(), version: version.to_string() },
+        ["project", "create", name, "--service", service] => Operation::ProjectCreate { name: name.to_string(), service: service.to_string() },
         _ => return None,
     };
     Some(submit(reason, operation))
